@@ -1,0 +1,434 @@
+/* CueDeck "studio console" design system (spec §8.1). */
+
+:root {
+  --canvas: #0b1020;
+  --surface-1: #11182b;
+  --surface-2: #17213a;
+  --line: #263452;
+  --text: #f2f6ff;
+  --muted: #9aa9c4;
+  --accent: #35d0ba;
+  --accent-strong: #14b8a6;
+  --warning: #f5b942;
+  --danger: #ff6b73;
+  --focus: #7dd3fc;
+  --radius: 10px;
+  --font-scale: 1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text);
+  font-family:
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  font-size: calc(15px * var(--font-scale));
+  line-height: 1.5;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font: inherit;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 8px 14px;
+  cursor: pointer;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+button.primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #04211c;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button.small {
+  min-height: 34px;
+  padding: 4px 10px;
+  font-size: 0.9em;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  background: var(--surface-1);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  width: 100%;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 70px;
+}
+
+a {
+  color: var(--accent);
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  flex-wrap: wrap;
+}
+
+.titlebar .brand {
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.titlebar .spacer {
+  flex: 1;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 0.82em;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.status-chip.ready {
+  color: var(--accent);
+  border-color: var(--accent-strong);
+}
+
+.status-chip.warn {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.status-chip.error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.recording-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--danger);
+  color: #2b0507;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.recording-indicator .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2b0507;
+  animation: cue-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes cue-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recording-indicator .dot {
+    animation: none;
+  }
+}
+
+.coach-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 25%);
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 0.78em;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card h2 .actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.capture-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.1em;
+  min-width: 56px;
+}
+
+.meter {
+  flex: 1;
+  min-width: 100px;
+  height: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.meter > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-strong), var(--accent));
+  transition: width 80ms linear;
+}
+
+.answer-text {
+  white-space: pre-wrap;
+  font-size: 1.08em;
+  min-height: 44px;
+}
+
+.answer-text .caret {
+  display: inline-block;
+  width: 8px;
+  background: var(--accent);
+  animation: cue-pulse 0.9s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .answer-text .caret {
+    animation: none;
+  }
+}
+
+.mode-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.status-rail {
+  border-top: 1px solid var(--line);
+  background: var(--surface-1);
+  padding: 6px 14px;
+  font-size: 0.82em;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.error-banner {
+  border: 1px solid var(--danger);
+  background: rgb(255 107 115 / 10%);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.warn-banner {
+  border: 1px solid var(--warning);
+  background: rgb(245 185 66 / 10%);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.field > span {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.prefs-shell {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.prefs-nav {
+  width: 170px;
+  border-right: 1px solid var(--line);
+  background: var(--surface-1);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.prefs-nav button {
+  text-align: left;
+  border: none;
+  background: none;
+}
+
+.prefs-nav button[aria-current='true'] {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.prefs-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.onboarding {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.progress-bar {
+  height: 10px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.progress-bar > div {
+  height: 100%;
+  background: var(--accent-strong);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.compact .coach-body {
+  padding: 8px;
+  gap: 8px;
+}
+
+.compact .card {
+  padding: 8px 10px;
+}
+
+table.history {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+table.history td,
+table.history th {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}

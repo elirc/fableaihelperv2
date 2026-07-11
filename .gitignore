@@ -1,0 +1,19 @@
+node_modules/
+dist/
+out/
+coverage/
+.vite/
+*.log
+.DS_Store
+
+# Playwright
+playwright-report/
+test-results/
+
+# Local model weights and caches
+cuedeck/models/
+cuedeck/.cache/
+
+# Environment files (names only belong in .env.example)
+.env
+.env.local

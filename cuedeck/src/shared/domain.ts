@@ -1,0 +1,214 @@
+/**
+ * Core domain types shared by the main process, preload, and renderer.
+ * Everything crossing the IPC boundary is validated against the Zod
+ * schemas in `schemas.ts`; these types are the static views of them.
+ */
+
+export type ProcessingLocation = 'local' | 'cloud';
+
+export type FreePolicy = 'always-free-local' | 'provider-free-tier';
+
+export type AnswerMode = 'natural' | 'concise' | 'bullets' | 'star' | 'clarify';
+
+export type TargetSeconds = 15 | 30 | 60;
+
+export type SessionState =
+  | 'unconfigured'
+  | 'checking'
+  | 'ready'
+  | 'arming_capture'
+  | 'recording'
+  | 'encoding'
+  | 'transcribing'
+  | 'generating'
+  | 'complete'
+  | 'cancelling'
+  | 'failed';
+
+export const PUBLIC_ERROR_CODES = [
+  'CAPTURE_DENIED',
+  'CAPTURE_NO_AUDIO',
+  'CAPTURE_SILENT',
+  'AUDIO_TOO_SHORT',
+  'AUDIO_TOO_LONG',
+  'MODEL_NOT_INSTALLED',
+  'LOCAL_PROVIDER_UNREACHABLE',
+  'CREDENTIAL_MISSING',
+  'CREDENTIAL_REJECTED',
+  'PROVIDER_RATE_LIMITED',
+  'PROVIDER_TIMEOUT',
+  'PROVIDER_UNAVAILABLE',
+  'TRANSCRIPT_EMPTY',
+  'REQUEST_CANCELLED',
+  'STORAGE_FAILED',
+  'UNKNOWN',
+] as const;
+
+export type PublicErrorCode = (typeof PUBLIC_ERROR_CODES)[number];
+
+export interface PublicError {
+  code: PublicErrorCode;
+  message: string;
+  retryable: boolean;
+  action?: 'open-diagnostics' | 'replace-key' | 'download-model' | 'switch-provider';
+  detail?: string;
+}
+
+export interface ProviderMeta {
+  id: string;
+  displayName: string;
+  location: ProcessingLocation;
+  freePolicy: FreePolicy;
+  supportsAbort: boolean;
+  kind: 'stt' | 'llm';
+  /** Link to the provider's data-use documentation (cloud providers only). */
+  dataUseUrl?: string;
+  /** Shown before the provider can be enabled. */
+  disclosure?: string;
+}
+
+export type ProbeStatus =
+  | 'ready'
+  | 'missing-credential'
+  | 'unreachable'
+  | 'missing-model'
+  | 'quota-limited'
+  | 'unsupported'
+  | 'unknown-failure';
+
+export interface ProviderProbe {
+  providerId: string;
+  status: ProbeStatus;
+  detail?: string;
+  latencyMs?: number;
+  models?: ModelSummary[];
+}
+
+export interface ModelSummary {
+  id: string;
+  displayName: string;
+  providerId: string;
+  installed?: boolean;
+  sizeBytes?: number;
+  license?: string;
+}
+
+export interface TranscriptSegment {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
+export interface TranscriptResult {
+  text: string;
+  language?: string;
+  durationMs?: number;
+  segments?: TranscriptSegment[];
+}
+
+export interface AnswerDelta {
+  text: string;
+  sequence: number;
+}
+
+export interface SessionMetrics {
+  encodeMs?: number;
+  transcribeMs?: number;
+  firstTokenMs?: number;
+  totalMs: number;
+  sttProviderId?: string;
+  sttModelId?: string;
+  llmProviderId?: string;
+  llmModelId?: string;
+}
+
+export type SessionEvent =
+  | { type: 'state'; sessionId: string; state: SessionState }
+  | { type: 'transcript'; sessionId: string; text: string; language?: string }
+  | { type: 'answer-delta'; sessionId: string; sequence: number; text: string }
+  | { type: 'answer-complete'; sessionId: string; text: string; metrics: SessionMetrics }
+  | { type: 'progress'; sessionId: string; stage: string; value?: number }
+  | { type: 'error'; sessionId: string; error: PublicError };
+
+export type OperationEvent =
+  | { type: 'progress'; operationId: string; stage: string; value?: number; detail?: string }
+  | { type: 'complete'; operationId: string }
+  | { type: 'error'; operationId: string; error: PublicError };
+
+export interface Profile {
+  id: string;
+  name: string;
+  summary: string;
+  roleContext: string;
+  emphasisNotes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HistoryItem {
+  id: string;
+  createdAt: string;
+  transcript: string;
+  answer: string;
+  sttProviderId: string;
+  sttModelId: string;
+  llmProviderId: string;
+  llmModelId: string;
+  answerMode: string;
+  timings: {
+    encodeMs: number;
+    transcribeMs: number;
+    firstTokenMs?: number;
+    totalMs: number;
+  };
+}
+
+export interface PublicSettings {
+  schemaVersion: number;
+  theme: 'dark' | 'system';
+  alwaysOnTop: boolean;
+  compactMode: boolean;
+  historyEnabled: boolean;
+  historyRetentionDays: 1 | 7 | 30 | 0;
+  sttProviderId: string;
+  sttModelId: string;
+  sttLanguage: string;
+  llmProviderId: string;
+  llmModelId: string;
+  answerMode: AnswerMode;
+  targetSeconds: TargetSeconds;
+  fontScale: number;
+  maxClipSeconds: number;
+  activeProfileId?: string;
+  ollamaBaseUrl: string;
+  onboardingComplete: boolean;
+  consentAcknowledgedAt: string | null;
+  credentials: Record<string, { configured: boolean }>;
+}
+
+export interface AppCapabilities {
+  appVersion: string;
+  electronVersion: string;
+  platform: string;
+  osVersion: string;
+  safeStorageAvailable: boolean;
+  totalMemoryMb: number;
+}
+
+export interface SessionOptions {
+  answerMode: AnswerMode;
+  targetSeconds: TargetSeconds;
+  language?: string;
+  sessionNotes?: string;
+}
+
+export interface DiagnosticsReport {
+  appVersion: string;
+  electronVersion: string;
+  platform: string;
+  osVersion: string;
+  sttProviderId: string;
+  llmProviderId: string;
+  localModelStatus: string;
+  recentErrors: Array<{ at: string; code: string; message: string }>;
+}

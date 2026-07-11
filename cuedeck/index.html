@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- The Content-Security-Policy is enforced from the main process via
+         session.webRequest.onHeadersReceived (src/main/security/windowSecurity.ts)
+         so the strict packaged policy and the dev policy (Vite HMR) stay in
+         one audited place. -->
+    <title>CueDeck</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/renderer/index.tsx"></script>
+  </body>
+</html>

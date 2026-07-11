@@ -1,0 +1,62 @@
+{
+  "name": "cuedeck",
+  "productName": "CueDeck",
+  "version": "0.1.0",
+  "description": "Free, local-first conversation practice and disclosed-assistance coach",
+  "main": ".vite/build/main.js",
+  "private": true,
+  "scripts": {
+    "dev": "electron-forge start",
+    "start": "electron-forge start",
+    "build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts && vite build --config vite.worker.config.ts && vite build --config vite.renderer.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test *.ts",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"test/**/*.ts\" \"*.{ts,json,md}\" \"public/*.js\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"test/**/*.ts\" \"*.{ts,json,md}\" \"public/*.js\"",
+    "test": "vitest run test/unit",
+    "test:watch": "vitest test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:e2e": "npm run build && playwright test",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:integration"
+  },
+  "keywords": [
+    "interview-practice",
+    "speech-to-text",
+    "electron",
+    "local-first"
+  ],
+  "author": "CueDeck contributors",
+  "license": "MIT",
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.2",
+    "@electron-forge/plugin-fuses": "^7.11.2",
+    "@electron-forge/plugin-vite": "^7.11.2",
+    "@electron/fuses": "^1.8.0",
+    "@playwright/test": "^1.56.1",
+    "@types/electron-squirrel-startup": "^1.0.2",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.13",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^43.1.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.5",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1",
+    "vite": "^5.4.21",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "electron-squirrel-startup": "^1.0.1",
+    "zod": "^4.4.3"
+  }
+}

@@ -1,11 +1,10 @@
 import { z } from 'zod';
 import { CLOUD_MODELS, PROVIDERS } from '../../../shared/catalog';
 import { TIMEOUTS } from '../../../shared/constants';
-import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
+import type { ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
-import { allowlistedFetch } from '../../security/http';
-import type { AnswerRequest, LlmProvider } from '../contracts';
-import { probeOpenAiCompatible, streamChatCompletions } from './openAiCompatible';
+import { allowlistedFetch, discardBody } from '../../security/http';
+import { OpenAiCompatibleLlmProvider } from './openAiCompatible';
 
 export const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
@@ -37,37 +36,55 @@ export function isFreeOpenRouterModel(model: {
   return prices.every((p) => p === undefined || Number(p) === 0);
 }
 
-export class OpenRouterProvider implements LlmProvider {
-  readonly meta = PROVIDERS.openrouter;
+/**
+ * OpenAI-compatible transport with OpenRouter-specific model policy: the
+ * model list is discovered live and filtered to free models only.
+ */
+export class OpenRouterProvider extends OpenAiCompatibleLlmProvider {
   private cachedModels: ModelSummary[] | null = null;
 
-  constructor(
-    private readonly getApiKey: () => Promise<string | null>,
-    private readonly baseUrl: string = OPENROUTER_DEFAULT_BASE_URL,
-  ) {}
+  constructor(getApiKey: () => Promise<string | null>, baseUrl = OPENROUTER_DEFAULT_BASE_URL) {
+    super(
+      {
+        meta: PROVIDERS.openrouter,
+        baseUrl,
+        providerName: 'OpenRouter',
+        models: [],
+        extraHeaders: {
+          'http-referer': 'https://github.com/cuedeck/cuedeck',
+          'x-title': 'CueDeck',
+        },
+        assertModelAllowed: (modelId) => {
+          if (modelId !== CLOUD_MODELS.openRouterDefaultModel && !modelId.endsWith(':free')) {
+            throw new CoachError(
+              'PROVIDER_UNAVAILABLE',
+              'only free OpenRouter models are permitted',
+            );
+          }
+        },
+      },
+      getApiKey,
+    );
+  }
 
-  async probe(signal: AbortSignal): Promise<ProviderProbe> {
-    const probe = await probeOpenAiCompatible({
-      baseUrl: this.baseUrl,
-      apiKey: await this.getApiKey(),
-      providerName: 'OpenRouter',
-      meta: this.meta,
-      signal,
-    });
+  override async probe(signal: AbortSignal): Promise<ProviderProbe> {
+    const probe = await super.probe(signal);
     if (probe.status === 'ready') {
       probe.models = await this.listModels(signal).catch(() => undefined);
     }
     return probe;
   }
 
-  async listModels(signal: AbortSignal): Promise<ModelSummary[]> {
+  override async listModels(signal: AbortSignal): Promise<ModelSummary[]> {
     try {
-      const res = await allowlistedFetch(`${this.baseUrl.replace(/\/+$/, '')}/models`, {
+      const res = await allowlistedFetch(`${this.descriptor.baseUrl.replace(/\/+$/, '')}/models`, {
         signal,
         timeoutMs: TIMEOUTS.probe,
       });
-      if (!res.ok)
+      if (!res.ok) {
+        discardBody(res);
         throw new CoachError('PROVIDER_UNAVAILABLE', `OpenRouter responded ${res.status}`);
+      }
       const parsed = modelsSchema.parse(await res.json());
       const free = parsed.data.filter(isFreeOpenRouterModel).map((m) => ({
         id: m.id,
@@ -87,23 +104,5 @@ export class OpenRouterProvider implements LlmProvider {
       if (this.cachedModels) return this.cachedModels; // cached fallback (spec §12.5)
       throw err;
     }
-  }
-
-  async *generate(input: AnswerRequest): AsyncIterable<AnswerDelta> {
-    const apiKey = await this.getApiKey();
-    if (!apiKey) throw new CoachError('CREDENTIAL_MISSING', 'OpenRouter API key not configured');
-    if (input.modelId !== CLOUD_MODELS.openRouterDefaultModel && !input.modelId.endsWith(':free')) {
-      throw new CoachError('PROVIDER_UNAVAILABLE', 'only free OpenRouter models are permitted');
-    }
-    yield* streamChatCompletions({
-      baseUrl: this.baseUrl,
-      apiKey,
-      providerName: 'OpenRouter',
-      extraHeaders: {
-        'http-referer': 'https://github.com/cuedeck/cuedeck',
-        'x-title': 'CueDeck',
-      },
-      request: input,
-    });
   }
 }

@@ -4,17 +4,17 @@ Built: 2026-07-10 • Location: `cuedeck/` • Version 0.1.0 • Electron 43.1.0
 
 ## Verification summary
 
-| Gate                                                 | Result                                                                                                                                                                                             |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run format:check`                               | pass                                                                                                                                                                                               |
-| `npm run lint` (ESLint 9 + typescript-eslint 8)      | pass, 0 problems                                                                                                                                                                                   |
-| `npm run typecheck` (strict)                         | pass                                                                                                                                                                                               |
-| `npm test` (unit)                                    | **93/93**                                                                                                                                                                                          |
-| `npm run test:integration` (fake HTTP servers)       | **33/33**                                                                                                                                                                                          |
-| `npm run test:e2e` (Playwright vs real Electron app) | **10/10**                                                                                                                                                                                          |
-| `npm run make` (Windows)                             | pass — `out/make/squirrel.windows/x64/CueDeck-Setup.exe`, `out/make/zip/win32/x64/CueDeck-win32-x64-0.1.0.zip`, `SHASUMS256.txt`                                                                   |
-| `npm audit --omit=dev`                               | 0 vulnerabilities                                                                                                                                                                                  |
-| `npm audit` (full)                                   | 28 findings, all **build-toolchain only** (Forge CLI transitive `tar`/`tmp`, Vite 5/esbuild dev-server); none ship in the packaged app. Documented exception; revisit when Forge supports Vite 6+. |
+| Gate                                                                      | Result                                                                                                                                                                                             |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run format:check`                                                    | pass                                                                                                                                                                                               |
+| `npm run lint` (ESLint 9 + typescript-eslint 8)                           | pass, 0 problems                                                                                                                                                                                   |
+| `npm run typecheck` (strict)                                              | pass                                                                                                                                                                                               |
+| `npm test` (unit)                                                         | **93/93**                                                                                                                                                                                          |
+| `npm run test:integration` (fake HTTP servers)                            | **33/33**                                                                                                                                                                                          |
+| `npm run test:e2e` (end-to-end: Playwright driving the real Electron app) | **10/10**                                                                                                                                                                                          |
+| `npm run make` (Windows)                                                  | pass — `out/make/squirrel.windows/x64/CueDeck-Setup.exe`, `out/make/zip/win32/x64/CueDeck-win32-x64-0.1.0.zip`, `SHASUMS256.txt`                                                                   |
+| `npm audit --omit=dev`                                                    | 0 vulnerabilities                                                                                                                                                                                  |
+| `npm audit` (full)                                                        | 28 findings, all **build-toolchain only** (Forge CLI transitive `tar`/`tmp`, Vite 5/esbuild dev-server); none ship in the packaged app. Documented exception; revisit when Forge supports Vite 6+. |
 
 ## MVP acceptance criteria (spec §22)
 
@@ -29,16 +29,16 @@ Built: 2026-07-10 • Location: `cuedeck/` • Version 0.1.0 • Electron 43.1.0
 9. **Sandbox/isolation/navigation/sender/payload validation** — `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`; `secureHandle` checks sender frame + Zod on every method; E2E asserts no Node/raw-IPC surface, denied `window.open`, denied navigation, denied unarmed `getDisplayMedia`.
 10. **Raw audio deleted after transcription** — capture buffers released on encode (`recorder.ts`), WAV bytes are scoped to the session pipeline, history schema has no audio field.
 11. **History off by default** — `DEFAULT_SETTINGS.historyEnabled: false`; coordinator writes history only when enabled (integration).
-12. **No capture exclusion / suppressible indicator** — `setContentProtection` is never called (grep-clean); recording indicator renders in normal and compact layouts whenever phase is `recording`; indicator-during-real-capture is in the manual matrix.
+12. **No capture exclusion / suppressible indicator** — `setContentProtection` is never called; the only mentions of it in `src/` are comments documenting its deliberate absence. The recording indicator renders in normal and compact layouts whenever phase is `recording`; indicator-during-real-capture is in the manual matrix.
 13. **All suites pass** — see table above.
 14. **Installer + checksums** — Squirrel setup + zip built on this Windows machine; SHA-256 sums in `out/make/SHASUMS256.txt`. Artifacts are unsigned (no funded certificate) — SmartScreen warning expected and documented.
 15. **License notices** — `THIRD_PARTY_NOTICES.md` covers packaged deps and on-demand model artifacts.
 
 ## Provider behavior: mocked vs real
 
-- **Verified against real services:** none required for the build; all adapters use current documented endpoints/IDs isolated in `src/shared/catalog.ts` (Groq `whisper-large-v3-turbo` / `llama-3.1-8b-instant`, `gemini-2.5-flash`, `openrouter/free`, Ollama `/api/chat`).
-- **Verified with local fakes (integration/E2E):** Ollama discovery/streaming/404/unreachable/abort; Groq SSE success/EOF-flush/401/429+Retry-After/500/malformed frames; Groq Whisper multipart; Gemini inline-audio transcription + SSE generation; OpenRouter free-model filtering and paid-model rejection.
-- **Local STT:** worker protocol, model manifest, and progress/cancel paths implemented (`sttWorker.ts`, `sttWorkerManager.ts`); pure audio pipeline fully unit-tested. Real model download + inference is hardware/network-dependent (below).
+- **Verified against real services:** none — no real cloud calls were required for the build. All adapters use current documented endpoints/model IDs isolated in `src/shared/catalog.ts` (Groq `whisper-large-v3-turbo` / `llama-3.1-8b-instant`, `gemini-2.5-flash`, `openrouter/free`, Ollama `/api/chat`), so a provider-side rename is a one-line change.
+- **Verified with local fakes (integration/E2E):** Ollama discovery/streaming/404/unreachable/abort; Groq SSE (server-sent events) success/EOF-flush/401/429+Retry-After/500/malformed frames; Groq Whisper multipart upload; Gemini inline-audio transcription + SSE generation; OpenRouter free-model filtering and paid-model rejection.
+- **Local STT (speech-to-text):** worker protocol, model manifest, and progress/cancel paths implemented (`sttWorker.ts`, `sttWorkerManager.ts`); pure audio pipeline fully unit-tested. Real model download + inference is hardware/network-dependent (below).
 
 ## Remaining manual Windows verification (hardware-dependent, not missing code)
 

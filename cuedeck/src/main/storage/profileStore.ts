@@ -6,9 +6,17 @@ import { readJsonFile, writeJsonFile } from '../storage/jsonFile';
 
 export class ProfileStore {
   private readonly filePath: string;
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(userDataDir: string) {
     this.filePath = path.join(userDataDir, 'profiles.json');
+  }
+
+  /** Serialize read-modify-write cycles so concurrent saves/deletes (e.g. from two windows) cannot lose updates. */
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task, task);
+    this.queue = run.catch(() => undefined);
+    return run;
   }
 
   async list(): Promise<Profile[]> {
@@ -29,24 +37,28 @@ export class ProfileStore {
   async save(
     input: Omit<Profile, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
   ): Promise<Profile> {
-    const profiles = await this.list();
-    const now = new Date().toISOString();
-    const existing = input.id ? profiles.find((p) => p.id === input.id) : undefined;
-    const profile: Profile = existing
-      ? { ...existing, ...input, id: existing.id, updatedAt: now }
-      : { ...input, id: input.id ?? randomUUID(), createdAt: now, updatedAt: now };
-    const next = existing
-      ? profiles.map((p) => (p.id === profile.id ? profile : p))
-      : [...profiles, profile];
-    await writeJsonFile(this.filePath, next);
-    return profile;
+    return this.enqueue(async () => {
+      const profiles = await this.list();
+      const now = new Date().toISOString();
+      const existing = input.id ? profiles.find((p) => p.id === input.id) : undefined;
+      const profile: Profile = existing
+        ? { ...existing, ...input, id: existing.id, updatedAt: now }
+        : { ...input, id: input.id ?? randomUUID(), createdAt: now, updatedAt: now };
+      const next = existing
+        ? profiles.map((p) => (p.id === profile.id ? profile : p))
+        : [...profiles, profile];
+      await writeJsonFile(this.filePath, next);
+      return profile;
+    });
   }
 
   async delete(id: string): Promise<void> {
-    const profiles = await this.list();
-    await writeJsonFile(
-      this.filePath,
-      profiles.filter((p) => p.id !== id),
-    );
+    await this.enqueue(async () => {
+      const profiles = await this.list();
+      await writeJsonFile(
+        this.filePath,
+        profiles.filter((p) => p.id !== id),
+      );
+    });
   }
 }

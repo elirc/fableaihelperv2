@@ -13,7 +13,9 @@ export function isLoopbackHost(hostname: string): boolean {
     hostname === '127.0.0.1' ||
     hostname === '::1' ||
     hostname === '[::1]' ||
-    hostname.startsWith('127.')
+    // Whole 127.0.0.0/8 block, but only literal IPv4 addresses — a DNS name
+    // like "127.evil.com" must not count as loopback.
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
   );
 }
 
@@ -53,6 +55,14 @@ export async function allowlistedFetch(url: string, options: FetchOptions = {}):
     }
     throw err;
   }
+}
+
+/**
+ * Release a response whose body will never be read (error statuses, probes)
+ * so the pooled socket is freed immediately instead of on GC.
+ */
+export function discardBody(res: Response): void {
+  void res.body?.cancel().catch(() => undefined);
 }
 
 function safeHost(rawUrl: string): string {

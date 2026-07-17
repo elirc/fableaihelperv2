@@ -4,14 +4,18 @@
  * schemas in `schemas.ts`; these types are the static views of them.
  */
 
+/** Where a provider runs; drives consent/disclosure UI for cloud providers. */
 export type ProcessingLocation = 'local' | 'cloud';
 
 export type FreePolicy = 'always-free-local' | 'provider-free-tier';
 
+/** Answer style requested by the user ('star' = Situation/Task/Action/Result). */
 export type AnswerMode = 'natural' | 'concise' | 'bullets' | 'star' | 'clarify';
 
+/** Desired spoken length of the generated answer, in seconds. */
 export type TargetSeconds = 15 | 30 | 60;
 
+/** Session lifecycle. One session = one capture→transcribe→generate pipeline. */
 export type SessionState =
   | 'unconfigured'
   | 'checking'
@@ -46,6 +50,10 @@ export const PUBLIC_ERROR_CODES = [
 
 export type PublicErrorCode = (typeof PUBLIC_ERROR_CODES)[number];
 
+/**
+ * Sanitized error safe to cross the IPC boundary and show in the UI.
+ * `detail` may carry provider text and must be redacted before logging.
+ */
 export interface PublicError {
   code: PublicErrorCode;
   message: string;
@@ -61,12 +69,18 @@ export interface ProviderMeta {
   freePolicy: FreePolicy;
   supportsAbort: boolean;
   kind: 'stt' | 'llm';
+  /**
+   * Secret-vault key this provider reads its API key from. Defaults to `id`;
+   * set it when several adapters share one account (e.g. Groq STT + LLM).
+   */
+  credentialId?: string;
   /** Link to the provider's data-use documentation (cloud providers only). */
   dataUseUrl?: string;
   /** Shown before the provider can be enabled. */
   disclosure?: string;
 }
 
+/** Outcome of a provider health probe (providers:probe). */
 export type ProbeStatus =
   | 'ready'
   | 'missing-credential'
@@ -93,12 +107,15 @@ export interface ModelSummary {
   license?: string;
 }
 
+/** One timed span of a transcript. Offsets are milliseconds from clip start. */
 export interface TranscriptSegment {
   startMs: number;
   endMs: number;
   text: string;
 }
 
+/** STT output. `durationMs` is the audio length in milliseconds when the
+ *  provider reports it. */
 export interface TranscriptResult {
   text: string;
   language?: string;
@@ -106,11 +123,14 @@ export interface TranscriptResult {
   segments?: TranscriptSegment[];
 }
 
+/** Streamed answer fragment. `sequence` increases by 1 per delta so the
+ *  renderer can detect gaps or reordering. */
 export interface AnswerDelta {
   text: string;
   sequence: number;
 }
 
+/** Stage timings for a completed session. All durations in milliseconds. */
 export interface SessionMetrics {
   encodeMs?: number;
   transcribeMs?: number;
@@ -122,6 +142,7 @@ export interface SessionMetrics {
   llmModelId?: string;
 }
 
+/** Push events emitted main→renderer over the session channel. */
 export type SessionEvent =
   | { type: 'state'; sessionId: string; state: SessionState }
   | { type: 'transcript'; sessionId: string; text: string; language?: string }
@@ -130,11 +151,14 @@ export type SessionEvent =
   | { type: 'progress'; sessionId: string; stage: string; value?: number }
   | { type: 'error'; sessionId: string; error: PublicError };
 
+/** Push events for long-running non-session work (e.g. model downloads). */
 export type OperationEvent =
   | { type: 'progress'; operationId: string; stage: string; value?: number; detail?: string }
   | { type: 'complete'; operationId: string }
   | { type: 'error'; operationId: string; error: PublicError };
 
+/** User background fed into prompts as untrusted reference data.
+ *  `createdAt`/`updatedAt` are ISO 8601 strings. */
 export interface Profile {
   id: string;
   name: string;
@@ -145,6 +169,7 @@ export interface Profile {
   updatedAt: string;
 }
 
+/** Persisted record of one completed session (only when history is enabled). */
 export interface HistoryItem {
   id: string;
   createdAt: string;
@@ -163,6 +188,8 @@ export interface HistoryItem {
   };
 }
 
+/** Renderer-visible settings. Never contains secret values: `credentials`
+ *  only exposes whether a key is configured per provider. */
 export interface PublicSettings {
   schemaVersion: number;
   theme: 'dark' | 'system';
@@ -186,6 +213,7 @@ export interface PublicSettings {
   credentials: Record<string, { configured: boolean }>;
 }
 
+/** Static environment facts reported once at startup. */
 export interface AppCapabilities {
   appVersion: string;
   electronVersion: string;
@@ -195,6 +223,8 @@ export interface AppCapabilities {
   totalMemoryMb: number;
 }
 
+/** Per-session knobs chosen at submit time. `sessionNotes` is untrusted
+ *  free text and is fenced when embedded in prompts. */
 export interface SessionOptions {
   answerMode: AnswerMode;
   targetSeconds: TargetSeconds;
@@ -202,6 +232,8 @@ export interface SessionOptions {
   sessionNotes?: string;
 }
 
+/** Redacted snapshot for the diagnostics export; must stay free of secrets
+ *  and, unless the user opts in, transcripts. */
 export interface DiagnosticsReport {
   appVersion: string;
   electronVersion: string;

@@ -1,4 +1,5 @@
 import type { AnswerMode, Profile, TargetSeconds } from './domain';
+import { capText } from './streaming';
 
 /**
  * Prompt assembly (spec §15). Profile, role context, notes, and transcript
@@ -7,6 +8,7 @@ import type { AnswerMode, Profile, TargetSeconds } from './domain';
  * to never treat block contents as instructions.
  */
 
+/** Inputs to prompt assembly. All free-text fields are untrusted. */
 export interface PromptInput {
   profile: Pick<Profile, 'summary' | 'roleContext' | 'emphasisNotes'> | null;
   sessionNotes?: string;
@@ -15,10 +17,18 @@ export interface PromptInput {
   targetSeconds: TargetSeconds;
 }
 
+/** System + user messages ready to hand to an LLM adapter. */
 export interface BuiltPrompt {
   system: string;
   user: string;
 }
+
+/**
+ * Cap on transcript characters embedded in the prompt. Mirrors the
+ * sessionRegenerateSchema bound; STT-produced transcripts are otherwise
+ * unbounded, and a misbehaving provider must not yield a megabyte prompt.
+ */
+const TRANSCRIPT_CHAR_CAP = 40_000;
 
 const MODE_RULES: Record<AnswerMode, string> = {
   natural:
@@ -30,6 +40,8 @@ const MODE_RULES: Record<AnswerMode, string> = {
     'Respond with exactly one short clarifying question, optionally preceded by a one-sentence bridge statement.',
 };
 
+/** Defang closing delimiters of our fenced blocks so untrusted text cannot
+ *  break out of the block it is embedded in. */
 export function escapeBlock(text: string): string {
   // Defang anything resembling a closing delimiter for our fenced blocks.
   return text.replace(
@@ -38,6 +50,7 @@ export function escapeBlock(text: string): string {
   );
 }
 
+/** Instruction-position content only; never embeds user-supplied text. */
 export function buildSystemPrompt(mode: AnswerMode, targetSeconds: TargetSeconds): string {
   return [
     'You are CueDeck, a conversation response coach. You draft what the user themselves could say next, in natural first-person spoken language.',
@@ -51,6 +64,8 @@ export function buildSystemPrompt(mode: AnswerMode, targetSeconds: TargetSeconds
   ].join('\n');
 }
 
+/** Fence each untrusted input in its named block; empty blocks are omitted.
+ *  The transcript is capped at TRANSCRIPT_CHAR_CAP characters. */
 export function buildUserPrompt(input: PromptInput): string {
   const parts: string[] = [];
   if (input.profile && (input.profile.summary || input.profile.emphasisNotes)) {
@@ -66,12 +81,17 @@ export function buildUserPrompt(input: PromptInput): string {
   if (input.sessionNotes) {
     parts.push(`<session_notes>\n${escapeBlock(input.sessionNotes)}\n</session_notes>`);
   }
-  parts.push(`<heard_transcript>\n${escapeBlock(input.transcript)}\n</heard_transcript>`);
+  parts.push(
+    `<heard_transcript>\n${escapeBlock(
+      capText(input.transcript, TRANSCRIPT_CHAR_CAP),
+    )}\n</heard_transcript>`,
+  );
   parts.push(`Requested mode: ${input.answerMode}`);
   parts.push(`Target speaking time: ${input.targetSeconds} seconds`);
   return parts.join('\n\n');
 }
 
+/** Assemble the full system+user prompt pair for one generation. */
 export function buildPrompt(input: PromptInput): BuiltPrompt {
   return {
     system: buildSystemPrompt(input.answerMode, input.targetSeconds),

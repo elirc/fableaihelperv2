@@ -3,7 +3,7 @@ import { CLOUD_MODELS, PROVIDERS } from '../../../shared/catalog';
 import { TIMEOUTS } from '../../../shared/constants';
 import type { ModelSummary, ProviderProbe, TranscriptResult } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
-import { allowlistedFetch } from '../../security/http';
+import { allowlistedFetch, discardBody } from '../../security/http';
 import type { SttProvider, TranscribeInput } from '../contracts';
 import { mapHttpStatus, probeOpenAiCompatible } from '../llm/openAiCompatible';
 import { GROQ_DEFAULT_BASE_URL } from '../llm/groq';
@@ -68,7 +68,10 @@ export class GroqWhisperProvider implements SttProvider {
       signal: input.signal,
       timeoutMs: TIMEOUTS.cloudStt,
     });
-    if (!res.ok) throw mapHttpStatus(res.status, 'Groq');
+    if (!res.ok) {
+      discardBody(res);
+      throw mapHttpStatus(res.status, 'Groq');
+    }
     const parsed = transcriptionSchema.parse(await res.json());
     return {
       text: parsed.text.trim(),

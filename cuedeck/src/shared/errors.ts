@@ -82,6 +82,8 @@ const TEMPLATES: Record<PublicErrorCode, ErrorTemplate> = {
   },
 };
 
+/** Build the canonical PublicError for a code. `detail` is developer-facing
+ *  context (surfaced in diagnostics) and must not contain secrets. */
 export function publicError(code: PublicErrorCode, detail?: string): PublicError {
   const t = TEMPLATES[code];
   return { code, message: t.message, retryable: t.retryable, action: t.action, detail };
@@ -103,10 +105,13 @@ export class CoachError extends Error {
 export function toPublicError(err: unknown): PublicError {
   if (err instanceof CoachError) return err.public;
   if (err instanceof Error) {
+    // Check TimeoutError before the abort heuristic: Node's AbortSignal.timeout()
+    // rejects with a TimeoutError whose message is "The operation was aborted due
+    // to timeout", which /abort/i would otherwise misreport as a cancellation.
+    if (err.name === 'TimeoutError') return publicError('PROVIDER_TIMEOUT');
     if (err.name === 'AbortError' || /abort/i.test(err.message)) {
       return publicError('REQUEST_CANCELLED');
     }
-    if (err.name === 'TimeoutError') return publicError('PROVIDER_TIMEOUT');
     return publicError('UNKNOWN', err.message);
   }
   return publicError('UNKNOWN', String(err));

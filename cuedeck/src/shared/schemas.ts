@@ -3,6 +3,8 @@ import { PUBLIC_ERROR_CODES } from './domain';
 
 export const answerModeSchema = z.enum(['natural', 'concise', 'bullets', 'star', 'clarify']);
 export const targetSecondsSchema = z.union([z.literal(15), z.literal(30), z.literal(60)]);
+/** Session ids are renderer-generated UUIDs; rejecting anything else keeps
+ *  ids safe to use in filenames and log lines. */
 export const sessionIdSchema = z
   .string()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'invalid session id');

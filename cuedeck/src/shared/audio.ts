@@ -75,11 +75,15 @@ function writeAscii(view: DataView, offset: number, text: string): void {
   for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
 }
 
+/** Parsed WAV header facts. Offsets/sizes in bytes, duration in milliseconds. */
 export interface WavInfo {
+  /** Samples per second (Hz). */
   sampleRate: number;
   channels: number;
   bitsPerSample: number;
+  /** Byte offset of the first PCM sample within the file. */
   dataOffset: number;
+  /** PCM payload size in bytes, clamped to what is actually present. */
   dataBytes: number;
   durationMs: number;
 }
@@ -119,7 +123,8 @@ export function parseWavHeader(bytes: Uint8Array): WavInfo {
   if (fmt.channels < 1 || fmt.channels > 2) throw new Error('unsupported channel count');
   if (fmt.sampleRate < 8_000 || fmt.sampleRate > 192_000)
     throw new Error('unsupported sample rate');
-  const frames = dataBytes / (2 * fmt.channels);
+  // Floor: a truncated file can leave a partial final frame in dataBytes.
+  const frames = Math.floor(dataBytes / (2 * fmt.channels));
   return {
     sampleRate: fmt.sampleRate,
     channels: fmt.channels,
@@ -143,7 +148,8 @@ export function decodeWavToFloat32(bytes: Uint8Array): {
 } {
   const info = parseWavHeader(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset + info.dataOffset, info.dataBytes);
-  const frames = info.dataBytes / (2 * info.channels);
+  // Floor: ignore a partial final frame rather than read past the DataView.
+  const frames = Math.floor(info.dataBytes / (2 * info.channels));
   const samples = new Float32Array(frames);
   for (let i = 0; i < frames; i++) {
     let sum = 0;

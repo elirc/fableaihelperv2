@@ -25,6 +25,7 @@ interface Harness {
 function makeHarness(overrides: {
   transcribe?: (input: TranscribeInput) => Promise<TranscriptResult>;
   generate?: (input: AnswerRequest) => AsyncIterable<AnswerDelta>;
+  warmup?: (modelId: string, signal: AbortSignal) => Promise<void>;
   historyEnabled?: boolean;
 }): Harness {
   const registry = new ProviderRegistry();
@@ -44,6 +45,7 @@ function makeHarness(overrides: {
     probe: async () => ({ providerId: 'ollama', status: 'ready' }),
     listModels: async () => [],
     generate: overrides.generate ?? defaultGenerate,
+    warmup: overrides.warmup,
   };
   registry.registerStt(stt);
   registry.registerLlm(llm);
@@ -206,6 +208,59 @@ describe('session pipeline', () => {
     await coordinator.regenerate(SID, 'my edited question', OPTIONS);
     expect(sttCalled).toBe(false);
     expect(events.some((e) => e.type === 'answer-complete')).toBe(true);
+  });
+
+  it('warms the LLM while transcription is still running', async () => {
+    let warmedModel: string | null = null;
+    let warmDuringTranscription = false;
+    const { coordinator } = makeHarness({
+      warmup: async (modelId) => {
+        warmedModel = modelId;
+      },
+      transcribe: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        warmDuringTranscription = warmedModel !== null;
+        return { text: 'Tell me about a production incident.' };
+      },
+    });
+    await coordinator.submit(SID, sineWav(2), OPTIONS, 5);
+    expect(warmedModel).toBe('test-llm');
+    expect(warmDuringTranscription).toBe(true);
+  });
+
+  it('completes the session normally when warmup fails', async () => {
+    const { coordinator, events } = makeHarness({
+      warmup: async () => {
+        throw new Error('provider is cold and unhappy');
+      },
+    });
+    await coordinator.submit(SID, sineWav(2), OPTIONS, 5);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.some((e) => e.type === 'answer-complete')).toBe(true);
+  });
+
+  it('aborts the warmup signal when the session is cancelled', async () => {
+    let warmupSignal: AbortSignal | null = null;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { coordinator } = makeHarness({
+      warmup: async (_modelId, signal) => {
+        warmupSignal = signal;
+      },
+      transcribe: async () => {
+        await gate;
+        return { text: 'never delivered' };
+      },
+    });
+    const run = coordinator.submit(SID, sineWav(2), OPTIONS, 5);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    coordinator.cancel(SID);
+    release();
+    await run;
+    expect(warmupSignal).not.toBeNull();
+    expect(warmupSignal!.aborted).toBe(true);
   });
 
   it('saves history only when enabled', async () => {

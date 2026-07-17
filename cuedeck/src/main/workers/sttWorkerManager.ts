@@ -89,6 +89,7 @@ export class SttWorkerManager {
     return this.worker;
   }
 
+  /** Kill the worker (freeing model memory); the next request respawns it. */
   stop(): void {
     if (this.worker) {
       this.worker.kill();
@@ -101,6 +102,9 @@ export class SttWorkerManager {
   /**
    * Ensure the model is loaded in the worker; first load downloads it.
    * Progress is reported through `onProgress`; abort kills the worker.
+   * Invariant: on any failure the half-loaded worker is killed (unless a
+   * newer call already replaced it), so `getStatus` never sticks at
+   * 'loading' and the next request starts from a clean process.
    */
   async ensureModel(
     modelId: string,
@@ -108,46 +112,58 @@ export class SttWorkerManager {
     signal: AbortSignal,
   ): Promise<void> {
     if (this.loadedModelId === modelId && this.status === 'ready') return;
+    // 'abort' does not fire for an already-aborted signal, so check first.
+    if (signal.aborted) throw new DOMException('aborted', 'AbortError');
     this.stop();
     const worker = this.spawn();
     this.status = 'loading';
     const wasInstalled = await this.isInstalled(modelId);
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        cleanup();
-        this.stop();
-        reject(new DOMException('aborted', 'AbortError'));
-      };
-      const onMessage = (event: { data?: unknown } | unknown) => {
-        const msg = ((event as { data?: unknown }).data ?? event) as Record<string, unknown>;
-        if (msg.type === 'load-progress') {
-          onProgress({
-            stage: wasInstalled ? 'loading' : 'downloading',
-            file: typeof msg.file === 'string' ? msg.file : undefined,
-            value: typeof msg.progress === 'number' ? msg.progress : undefined,
-          });
-        } else if (msg.type === 'loaded') {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
           cleanup();
-          resolve();
-        } else if (msg.type === 'load-error') {
+          reject(new DOMException('aborted', 'AbortError'));
+        };
+        const onMessage = (event: { data?: unknown } | unknown) => {
+          const msg = ((event as { data?: unknown }).data ?? event) as Record<string, unknown>;
+          if (msg.type === 'load-progress') {
+            onProgress({
+              stage: wasInstalled ? 'loading' : 'downloading',
+              file: typeof msg.file === 'string' ? msg.file : undefined,
+              value: typeof msg.progress === 'number' ? msg.progress : undefined,
+            });
+          } else if (msg.type === 'loaded') {
+            cleanup();
+            resolve();
+          } else if (msg.type === 'load-error') {
+            cleanup();
+            reject(
+              new CoachError('MODEL_NOT_INSTALLED', String(msg.detail ?? 'model load failed')),
+            );
+          }
+        };
+        const onExit = () => {
           cleanup();
-          reject(new CoachError('MODEL_NOT_INSTALLED', String(msg.detail ?? 'model load failed')));
+          reject(new CoachError('MODEL_NOT_INSTALLED', 'model worker exited during load'));
+        };
+        const cleanup = () => {
+          signal.removeEventListener('abort', onAbort);
+          worker.removeListener('message', onMessage as never);
+          worker.removeListener('exit', onExit);
+        };
+        if (signal.aborted) {
+          reject(new DOMException('aborted', 'AbortError'));
+          return;
         }
-      };
-      const onExit = () => {
-        cleanup();
-        reject(new CoachError('MODEL_NOT_INSTALLED', 'model worker exited during load'));
-      };
-      const cleanup = () => {
-        signal.removeEventListener('abort', onAbort);
-        worker.removeListener('message', onMessage as never);
-        worker.removeListener('exit', onExit);
-      };
-      signal.addEventListener('abort', onAbort, { once: true });
-      worker.on('message', onMessage as never);
-      worker.on('exit', onExit);
-      worker.postMessage({ type: 'load', modelId, cacheDir: this.modelsDir });
-    });
+        signal.addEventListener('abort', onAbort, { once: true });
+        worker.on('message', onMessage as never);
+        worker.on('exit', onExit);
+        worker.postMessage({ type: 'load', modelId, cacheDir: this.modelsDir });
+      });
+    } catch (err) {
+      if (this.worker === worker) this.stop();
+      throw err;
+    }
     this.loadedModelId = modelId;
     this.status = 'ready';
     if (!wasInstalled) await this.recordInstall(modelId);
@@ -179,6 +195,11 @@ export class SttWorkerManager {
     await writeJsonFile(this.manifestPath, manifest);
   }
 
+  /**
+   * Transcribe Float32 PCM in the worker (loading the model first if
+   * needed). Abort kills the worker process — the only way to interrupt an
+   * in-flight inference — and the next request respawns it.
+   */
   async transcribe(input: {
     audio: Float32Array;
     modelId: string;
@@ -193,7 +214,8 @@ export class SttWorkerManager {
     return new Promise<TranscriptResult>((resolve, reject) => {
       const onAbort = () => {
         cleanup();
-        this.stop();
+        // Only kill our own worker; a newer request may have replaced it.
+        if (this.worker === worker) this.stop();
         reject(new DOMException('aborted', 'AbortError'));
       };
       const onMessage = (event: { data?: unknown } | unknown) => {
@@ -220,6 +242,12 @@ export class SttWorkerManager {
         worker.removeListener('message', onMessage as never);
         worker.removeListener('exit', onExit);
       };
+      // 'abort' does not fire for an already-aborted signal, so check first;
+      // otherwise a pre-cancelled session would run a full inference.
+      if (input.signal.aborted) {
+        reject(new DOMException('aborted', 'AbortError'));
+        return;
+      }
       input.signal.addEventListener('abort', onAbort, { once: true });
       worker.on('message', onMessage as never);
       worker.on('exit', onExit);

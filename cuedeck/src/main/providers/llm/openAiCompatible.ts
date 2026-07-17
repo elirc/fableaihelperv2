@@ -1,10 +1,15 @@
 import { z } from 'zod';
 import { TIMEOUTS } from '../../../shared/constants';
-import type { AnswerDelta, ProviderProbe, ProviderMeta } from '../../../shared/domain';
+import type {
+  AnswerDelta,
+  ModelSummary,
+  ProviderProbe,
+  ProviderMeta,
+} from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { SseParser } from '../../../shared/streaming';
-import { allowlistedFetch } from '../../security/http';
-import { bodyChunks, type AnswerRequest } from '../contracts';
+import { allowlistedFetch, discardBody } from '../../security/http';
+import { bodyChunks, type AnswerRequest, type LlmProvider } from '../contracts';
 
 const chunkSchema = z.object({
   choices: z
@@ -72,11 +77,15 @@ export async function* streamChatCompletions(options: {
   if (res.status === 429) {
     const retryAfter = Number(res.headers.get('retry-after'));
     if (Number.isFinite(retryAfter) && retryAfter > 0 && retryAfter <= 10) {
+      discardBody(res);
       await abortableDelay(retryAfter * 1000, request.signal);
       res = await doFetch();
     }
   }
-  if (!res.ok) throw mapHttpStatus(res.status, providerName);
+  if (!res.ok) {
+    discardBody(res);
+    throw mapHttpStatus(res.status, providerName);
+  }
 
   const parser = new SseParser();
   let sequence = 0;
@@ -124,6 +133,7 @@ export async function probeOpenAiCompatible(options: {
       signal: options.signal,
       timeoutMs: TIMEOUTS.probe,
     });
+    discardBody(res); // probes only inspect the status line
     if (res.status === 401 || res.status === 403) {
       return {
         providerId: options.meta.id,
@@ -148,6 +158,83 @@ export async function probeOpenAiCompatible(options: {
       status: 'unreachable',
       detail: err instanceof Error ? err.message : String(err),
     };
+  }
+}
+
+/**
+ * Everything that distinguishes one OpenAI-compatible endpoint from another.
+ * Adding a new provider (Groq, Cerebras, Mistral, a self-hosted vLLM…) is a
+ * descriptor plus an ALLOWED_HOSTS entry — no new streaming or error code.
+ * Pattern follows Vercel AI SDK's `createOpenAICompatible`.
+ */
+export interface OpenAiCompatibleDescriptor {
+  meta: ProviderMeta;
+  baseUrl: string;
+  /** Human-readable name used in error messages ("Groq rejected the API key"). */
+  providerName: string;
+  /** Models offered in the UI when the provider pins a fixed free set. */
+  models: ModelSummary[];
+  extraHeaders?: Record<string, string>;
+  /** Throw a CoachError before any request when the model is not permitted. */
+  assertModelAllowed?: (modelId: string) => void;
+}
+
+export class OpenAiCompatibleLlmProvider implements LlmProvider {
+  readonly meta: ProviderMeta;
+
+  constructor(
+    protected readonly descriptor: OpenAiCompatibleDescriptor,
+    protected readonly getApiKey: () => Promise<string | null>,
+  ) {
+    this.meta = descriptor.meta;
+  }
+
+  async probe(signal: AbortSignal): Promise<ProviderProbe> {
+    return probeOpenAiCompatible({
+      baseUrl: this.descriptor.baseUrl,
+      apiKey: await this.getApiKey(),
+      providerName: this.descriptor.providerName,
+      meta: this.meta,
+      signal,
+      extraHeaders: this.descriptor.extraHeaders,
+    });
+  }
+
+  async listModels(_signal: AbortSignal): Promise<ModelSummary[]> {
+    return this.descriptor.models;
+  }
+
+  /**
+   * Open (and validate) a keep-alive connection so the generate call that
+   * follows skips DNS + TCP + TLS setup. Node's fetch pools the socket.
+   */
+  async warmup(_modelId: string, signal: AbortSignal): Promise<void> {
+    const apiKey = await this.getApiKey();
+    if (!apiKey) return;
+    const res = await allowlistedFetch(`${this.descriptor.baseUrl.replace(/\/+$/, '')}/models`, {
+      headers: { authorization: `Bearer ${apiKey}`, ...this.descriptor.extraHeaders },
+      signal,
+      timeoutMs: TIMEOUTS.warmup,
+    });
+    discardBody(res);
+  }
+
+  async *generate(input: AnswerRequest): AsyncIterable<AnswerDelta> {
+    this.descriptor.assertModelAllowed?.(input.modelId);
+    const apiKey = await this.getApiKey();
+    if (!apiKey) {
+      throw new CoachError(
+        'CREDENTIAL_MISSING',
+        `${this.descriptor.providerName} API key not configured`,
+      );
+    }
+    yield* streamChatCompletions({
+      baseUrl: this.descriptor.baseUrl,
+      apiKey,
+      providerName: this.descriptor.providerName,
+      extraHeaders: this.descriptor.extraHeaders,
+      request: input,
+    });
   }
 }
 

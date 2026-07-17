@@ -3,7 +3,7 @@ import { CLOUD_MODELS, PROVIDERS } from '../../../shared/catalog';
 import { TIMEOUTS } from '../../../shared/constants';
 import type { ModelSummary, ProviderProbe, TranscriptResult } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
-import { allowlistedFetch } from '../../security/http';
+import { allowlistedFetch, discardBody } from '../../security/http';
 import type { SttProvider, TranscribeInput } from '../contracts';
 import { GEMINI_DEFAULT_BASE_URL } from '../llm/gemini';
 import { mapHttpStatus } from '../llm/openAiCompatible';
@@ -43,6 +43,7 @@ export class GeminiAudioProvider implements SttProvider {
         signal,
         timeoutMs: TIMEOUTS.probe,
       });
+      discardBody(res); // probes only inspect the status line
       if (res.status === 400 || res.status === 401 || res.status === 403) {
         return {
           providerId: this.meta.id,
@@ -107,7 +108,10 @@ export class GeminiAudioProvider implements SttProvider {
       signal: input.signal,
       timeoutMs: TIMEOUTS.cloudStt,
     });
-    if (!res.ok) throw mapHttpStatus(res.status, 'Gemini');
+    if (!res.ok) {
+      discardBody(res);
+      throw mapHttpStatus(res.status, 'Gemini');
+    }
     const parsed = responseSchema.parse(await res.json());
     const text = parsed.candidates[0]?.content?.parts.map((p) => p.text ?? '').join('') ?? '';
     return { text: text.trim() };

@@ -4,7 +4,7 @@ import { TIMEOUTS } from '../../../shared/constants';
 import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { SseParser } from '../../../shared/streaming';
-import { allowlistedFetch } from '../../security/http';
+import { allowlistedFetch, discardBody } from '../../security/http';
 import { bodyChunks, type AnswerRequest, type LlmProvider } from '../contracts';
 import { mapHttpStatus } from './openAiCompatible';
 
@@ -21,6 +21,14 @@ const streamChunkSchema = z.object({
     )
     .default([]),
 });
+
+/**
+ * Only 2.5 Flash variants accept `thinkingBudget: 0`; 2.5 Pro enforces a
+ * minimum budget and pre-2.5 models reject thinkingConfig outright.
+ */
+export function supportsDisabledThinking(modelId: string): boolean {
+  return modelId.includes('2.5-flash');
+}
 
 export class GeminiLlmProvider implements LlmProvider {
   readonly meta = PROVIDERS.gemini;
@@ -40,6 +48,7 @@ export class GeminiLlmProvider implements LlmProvider {
         signal,
         timeoutMs: TIMEOUTS.probe,
       });
+      discardBody(res); // probes only inspect the status line
       if (res.status === 400 || res.status === 401 || res.status === 403) {
         return {
           providerId: this.meta.id,
@@ -74,6 +83,18 @@ export class GeminiLlmProvider implements LlmProvider {
     ];
   }
 
+  /** Warm DNS + TLS (and key validity) while transcription runs. */
+  async warmup(modelId: string, signal: AbortSignal): Promise<void> {
+    const apiKey = await this.getApiKey();
+    if (!apiKey) return;
+    const res = await allowlistedFetch(`${this.baseUrl}/models/${modelId}`, {
+      headers: { 'x-goog-api-key': apiKey },
+      signal,
+      timeoutMs: TIMEOUTS.warmup,
+    });
+    discardBody(res);
+  }
+
   async *generate(input: AnswerRequest): AsyncIterable<AnswerDelta> {
     const apiKey = await this.getApiKey();
     if (!apiKey) throw new CoachError('CREDENTIAL_MISSING', 'Gemini API key not configured');
@@ -85,13 +106,24 @@ export class GeminiLlmProvider implements LlmProvider {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: input.system }] },
           contents: [{ role: 'user', parts: [{ text: input.user }] }],
-          generationConfig: { maxOutputTokens: 1024, temperature: 0.6 },
+          generationConfig: {
+            maxOutputTokens: 1024,
+            temperature: 0.6,
+            // 2.5 Flash "thinks" before answering by default, which delays
+            // the first token by seconds. Short spoken cues don't need it.
+            ...(supportsDisabledThinking(input.modelId)
+              ? { thinkingConfig: { thinkingBudget: 0 } }
+              : {}),
+          },
         }),
         signal: input.signal,
         timeoutMs: TIMEOUTS.llmTotal,
       },
     );
-    if (!res.ok) throw mapHttpStatus(res.status, 'Gemini');
+    if (!res.ok) {
+      discardBody(res);
+      throw mapHttpStatus(res.status, 'Gemini');
+    }
     const parser = new SseParser();
     let sequence = 0;
     const handle = (data: string): AnswerDelta | null => {

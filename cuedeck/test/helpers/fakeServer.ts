@@ -61,8 +61,32 @@ export async function writeChunked(
   res.end();
 }
 
+/** Write a partial body, then sever the connection without a terminating chunk. */
+export async function writeThenDestroy(
+  res: http.ServerResponse,
+  partialBody: string,
+  delayMs = 30,
+): Promise<void> {
+  res.write(partialBody);
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  res.destroy();
+}
+
 export async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
   for await (const item of iterable) out.push(item);
   return out;
+}
+
+/** Drain an iterable expected to fail mid-way, keeping the items seen before the error. */
+export async function collectUntilError<T>(
+  iterable: AsyncIterable<T>,
+): Promise<{ items: T[]; error: unknown }> {
+  const items: T[] = [];
+  try {
+    for await (const item of iterable) items.push(item);
+  } catch (error) {
+    return { items, error };
+  }
+  throw new Error('expected the iterable to fail, but it completed');
 }

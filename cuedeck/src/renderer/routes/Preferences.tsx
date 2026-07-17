@@ -185,7 +185,11 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
 
   const sttProviders = providers.filter((p) => p.kind === 'stt');
   const llmProviders = providers.filter((p) => p.kind === 'llm');
-  const cloudProviders = ['groq', 'gemini', 'openrouter'];
+  // One key section per cloud account, derived from provider metadata so a
+  // newly registered provider shows up without touching this component.
+  const cloudProviders = [
+    ...new Set(providers.filter((p) => p.location === 'cloud').map((p) => p.credentialId ?? p.id)),
+  ];
   const ollamaIsRemote = !/^https?:\/\/(localhost|127\.|\[::1\])/.test(ollamaUrl);
 
   const providerStatus = (id: string) => {
@@ -238,7 +242,7 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
                 value={p.id}
                 disabled={
                   p.location === 'cloud' &&
-                  !settings.credentials[p.id === 'groq-whisper' ? 'groq' : 'gemini']?.configured
+                  !settings.credentials[p.credentialId ?? p.id]?.configured
                 }
               >
                 {p.displayName}
@@ -277,7 +281,10 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
               <option
                 key={p.id}
                 value={p.id}
-                disabled={p.location === 'cloud' && !settings.credentials[p.id]?.configured}
+                disabled={
+                  p.location === 'cloud' &&
+                  !settings.credentials[p.credentialId ?? p.id]?.configured
+                }
               >
                 {p.displayName}
                 {p.freePolicy === 'always-free-local'
@@ -353,7 +360,9 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
           removable at any time. Local mode needs no key.
         </p>
         {cloudProviders.map((id) => {
-          const meta = providers.find((p) => p.id === id);
+          const meta =
+            providers.find((p) => p.id === id) ??
+            providers.find((p) => (p.credentialId ?? p.id) === id);
           const configured = settings.credentials[id]?.configured ?? false;
           return (
             <div

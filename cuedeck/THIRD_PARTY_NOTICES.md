@@ -6,18 +6,24 @@ installed tree; the principal components are:
 
 ## Runtime dependencies (packaged)
 
+These ship inside the installed app. The first three are the `dependencies` in
+`package.json`; React and onnxruntime also ship because they are bundled into the built
+JavaScript (React by Vite into the renderer bundle, onnxruntime as a transitive dependency of
+Transformers.js).
+
 | Component                                   | License                                | Use                            |
 | ------------------------------------------- | -------------------------------------- | ------------------------------ |
-| Electron (incl. Chromium, Node.js)          | MIT / BSD-style (Chromium), MIT (Node) | desktop runtime                |
 | @huggingface/transformers (Transformers.js) | Apache-2.0                             | local speech-to-text inference |
-| onnxruntime (bundled by Transformers.js)    | MIT                                    | ONNX model execution           |
-| zod                                         | MIT                                    | runtime validation             |
 | electron-squirrel-startup                   | Apache-2.0                             | Squirrel installer events      |
+| zod                                         | MIT                                    | runtime validation             |
+| Electron (incl. Chromium, Node.js)          | MIT / BSD-style (Chromium), MIT (Node) | desktop runtime                |
+| React & react-dom (bundled into renderer)   | MIT                                    | UI framework                   |
+| onnxruntime (bundled by Transformers.js)    | MIT                                    | ONNX model execution           |
 
-## Development / build
+## Development / build (not shipped)
 
-React & react-dom (MIT), Vite (MIT), Electron Forge (MIT), TypeScript (Apache-2.0),
-Vitest (MIT), Playwright (Apache-2.0), ESLint (MIT), typescript-eslint (MIT), Prettier (MIT).
+Vite (MIT), Electron Forge (MIT), TypeScript (Apache-2.0), Vitest (MIT),
+Playwright (Apache-2.0), ESLint (MIT), typescript-eslint (MIT), Prettier (MIT).
 
 ## Model artifacts (downloaded on demand, not redistributed)
 
@@ -28,8 +34,11 @@ CueDeck does not bundle model weights. On first use it downloads, at the user's 
 | `onnx-community/whisper-tiny` / `whisper-base` / `whisper-small` | Hugging Face Hub                 | MIT (OpenAI Whisper weights; ONNX community conversion) — see each model card |
 | Ollama models (e.g. `qwen2.5:3b-instruct`)                       | installed by the user via Ollama | per-model license shown by `ollama show` / the Ollama library page            |
 
-Model files are stored under the app data `models/` directory with an installation manifest and
-can be removed from Preferences. Review each model card's license before redistributing weights.
+Model files are stored under `%APPDATA%\CueDeck\models\` with an installation manifest
+(`manifest.json`). There is no in-app removal control yet; to reclaim space, delete the model's
+folder inside `models\` while the app is closed (the manifest is re-verified on next use, and
+missing files simply trigger a fresh download prompt). Review each model card's license before
+redistributing weights.
 
 ## Fonts and icons
 

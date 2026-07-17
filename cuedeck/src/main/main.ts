@@ -6,6 +6,7 @@ import type { OperationEvent, SessionEvent } from '../shared/domain';
 import { Diagnostics } from './diagnostics';
 import { registerIpc, type AppServices } from './ipc/register';
 import { ProviderRegistry } from './providers/registry';
+import { CerebrasLlmProvider } from './providers/llm/cerebras';
 import { GeminiLlmProvider } from './providers/llm/gemini';
 import { GroqLlmProvider } from './providers/llm/groq';
 import { OllamaProvider } from './providers/llm/ollama';
@@ -73,6 +74,7 @@ async function bootstrap(): Promise<void> {
   registry.registerStt(new GeminiAudioProvider(keyFor('gemini')));
   registry.registerLlm(new OllamaProvider(async () => (await settings.get()).ollamaBaseUrl));
   registry.registerLlm(new GroqLlmProvider(keyFor('groq')));
+  registry.registerLlm(new CerebrasLlmProvider(keyFor('cerebras')));
   registry.registerLlm(new GeminiLlmProvider(keyFor('gemini')));
   registry.registerLlm(new OpenRouterProvider(keyFor('openrouter')));
 

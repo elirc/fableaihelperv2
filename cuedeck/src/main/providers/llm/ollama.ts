@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { PROVIDERS } from '../../../shared/catalog';
-import { TIMEOUTS } from '../../../shared/constants';
+import { OLLAMA_KEEP_ALIVE, TIMEOUTS } from '../../../shared/constants';
 import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { NdjsonParser } from '../../../shared/streaming';
-import { allowlistedFetch, isLoopbackHost } from '../../security/http';
+import { allowlistedFetch, discardBody, isLoopbackHost } from '../../security/http';
 import { bodyChunks, type AnswerRequest, type LlmProvider } from '../contracts';
 
 const tagsSchema = z.object({
@@ -58,6 +58,7 @@ export class OllamaProvider implements LlmProvider {
       timeoutMs: TIMEOUTS.probe,
     });
     if (!res.ok) {
+      discardBody(res);
       throw new CoachError('LOCAL_PROVIDER_UNREACHABLE', `Ollama responded ${res.status}`);
     }
     const parsed = tagsSchema.parse(await res.json());
@@ -68,6 +69,22 @@ export class OllamaProvider implements LlmProvider {
       installed: true,
       sizeBytes: m.size,
     }));
+  }
+
+  /**
+   * Preload the model while transcription runs: /api/chat with an empty
+   * messages array loads the model into memory and returns immediately
+   * (Ollama FAQ), turning a multi-second cold start into a no-op later.
+   */
+  async warmup(modelId: string, signal: AbortSignal): Promise<void> {
+    const res = await allowlistedFetch(`${await this.base()}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: modelId, messages: [], keep_alive: OLLAMA_KEEP_ALIVE }),
+      signal,
+      timeoutMs: TIMEOUTS.warmup,
+    });
+    discardBody(res);
   }
 
   async *generate(input: AnswerRequest): AsyncIterable<AnswerDelta> {
@@ -84,6 +101,9 @@ export class OllamaProvider implements LlmProvider {
           model: input.modelId,
           stream: true,
           think: false,
+          // Keep the model resident between turns; reloading it dominates
+          // first-token latency on consecutive answers otherwise.
+          keep_alive: OLLAMA_KEEP_ALIVE,
           options: { num_predict: 700, temperature: 0.6 },
           messages: [
             { role: 'system', content: input.system },
@@ -99,12 +119,14 @@ export class OllamaProvider implements LlmProvider {
       throw new CoachError('LOCAL_PROVIDER_UNREACHABLE', 'could not connect to Ollama');
     }
     if (res.status === 404) {
+      discardBody(res);
       throw new CoachError(
         'MODEL_NOT_INSTALLED',
         `model ${input.modelId} is not installed in Ollama`,
       );
     }
     if (!res.ok) {
+      discardBody(res);
       throw new CoachError('PROVIDER_UNAVAILABLE', `Ollama responded ${res.status}`);
     }
     const parser = new NdjsonParser();

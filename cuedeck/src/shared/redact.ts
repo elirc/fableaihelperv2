@@ -23,6 +23,9 @@ const PATTERNS: Array<{ re: RegExp; replacement: string }> = [
   },
 ];
 
+/** Replace credential-shaped substrings (bearer tokens, provider key formats,
+ *  key/token/password fields) with [REDACTED]. Apply to any free text before
+ *  it is logged or exported. */
 export function redactSecrets(text: string): string {
   let out = text;
   for (const { re, replacement } of PATTERNS) {
@@ -38,7 +41,7 @@ export function redactDeep<T>(value: T): T {
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = /^(authorization|apikey|api_key|key|token|secret|password)$/i.test(k)
+      out[k] = /^(authorization|api[-_]?key|key|token|secret|password)$/i.test(k)
         ? '[REDACTED]'
         : redactDeep(v);
     }

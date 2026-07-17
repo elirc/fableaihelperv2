@@ -16,6 +16,11 @@ export class CaptureGrant {
     private readonly now: () => number = Date.now,
   ) {}
 
+  /**
+   * Arm the grant for one upcoming getDisplayMedia call. Re-arming
+   * overwrites any pending grant (there is never more than one), and the
+   * grant self-expires after `ttlMs` even if never consumed.
+   */
   arm(sessionId: string): { expiresAt: number } {
     this.armedSessionId = sessionId;
     this.armedAt = this.now();

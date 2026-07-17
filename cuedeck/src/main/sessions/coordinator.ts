@@ -48,6 +48,8 @@ export interface CoordinatorDeps {
   recordError: (code: string, message: string) => void;
 }
 
+type CoordinatorSettings = Awaited<ReturnType<CoordinatorDeps['getSettings']>>;
+
 interface SessionContext {
   id: string;
   controller: AbortController;
@@ -102,6 +104,11 @@ export class SessionCoordinator {
     this.emit(context, { type: 'state', sessionId: context.id, state });
   }
 
+  /**
+   * Cancel the session if it is still the active one. Aborts all in-flight
+   * provider work and emits a final 'ready' state (never an error), so the
+   * renderer treats a cancel as a clean reset.
+   */
   cancel(sessionId: string): void {
     if (this.active?.id === sessionId) {
       const context = this.active;
@@ -137,6 +144,7 @@ export class SessionCoordinator {
       }
 
       this.setState(context, 'transcribing');
+      this.warmupLlm(context, settings);
       const stt = this.deps.registry.getStt(settings.sttProviderId);
       const sttTimeout = stt.meta.location === 'local' ? TIMEOUTS.localStt : TIMEOUTS.cloudStt;
       const transcribeStarted = Date.now();
@@ -160,7 +168,7 @@ export class SessionCoordinator {
         language: transcript.language,
       });
 
-      await this.generate(context, transcript.text, options, {
+      await this.generate(context, settings, transcript.text, options, {
         encodeMs,
         transcribeMs,
         startedAt: started,
@@ -176,8 +184,9 @@ export class SessionCoordinator {
   async regenerate(sessionId: string, transcript: string, options: SessionOptions): Promise<void> {
     const context = this.begin(sessionId);
     try {
+      const settings = await this.deps.getSettings();
       context.transcript = transcript;
-      await this.generate(context, transcript, options, {
+      await this.generate(context, settings, transcript, options, {
         encodeMs: 0,
         transcribeMs: 0,
         startedAt: Date.now(),
@@ -187,8 +196,29 @@ export class SessionCoordinator {
     }
   }
 
+  /**
+   * Fire-and-forget LLM warmup, run while transcription is still in flight
+   * (local model load / cloud TLS setup overlaps STT instead of adding to
+   * first-token latency). Best-effort by contract: any failure surfaces
+   * later through the real generate call, with its proper error mapping.
+   */
+  private warmupLlm(context: SessionContext, settings: CoordinatorSettings): void {
+    try {
+      const llm = this.deps.registry.getLlm(settings.llmProviderId);
+      if (!llm.warmup) return;
+      const signal = AbortSignal.any([
+        context.controller.signal,
+        AbortSignal.timeout(TIMEOUTS.warmup),
+      ]);
+      void llm.warmup(settings.llmModelId, signal).catch(() => undefined);
+    } catch {
+      // Unknown provider IDs fail the session later with a precise error.
+    }
+  }
+
   private async generate(
     context: SessionContext,
+    settings: CoordinatorSettings,
     transcript: string,
     options: SessionOptions,
     timing: {
@@ -199,7 +229,6 @@ export class SessionCoordinator {
       sttModelId?: string;
     },
   ): Promise<void> {
-    const settings = await this.deps.getSettings();
     const llm = this.deps.registry.getLlm(settings.llmProviderId);
     const profile = settings.activeProfileId
       ? await this.deps.getProfile(settings.activeProfileId)
@@ -271,6 +300,10 @@ export class SessionCoordinator {
     };
     this.setState(context, 'complete');
     this.emit(context, { type: 'answer-complete', sessionId: context.id, text: answer, metrics });
+    // The session is finished: retire it before the best-effort history write
+    // so a cancel() arriving during the disk write cannot match it and emit a
+    // spurious 'ready' after 'answer-complete'.
+    if (this.active === context) this.active = null;
 
     if (settings.historyEnabled) {
       await this.deps
@@ -294,12 +327,15 @@ export class SessionCoordinator {
         )
         .catch(() => undefined); // history failure must not fail the session
     }
-    if (this.active === context) this.active = null;
   }
 
   private fail(context: SessionContext, err: unknown): void {
     const publicErr = toPublicError(err);
-    this.deps.recordError(publicErr.code, publicErr.message);
+    // Deliberate aborts (cancel, or retirement by a newer session) are not
+    // failures; recording them would evict real errors from diagnostics.
+    if (!context.controller.signal.aborted) {
+      this.deps.recordError(publicErr.code, publicErr.message);
+    }
     if (this.active === context) {
       this.active = null;
       if (!context.controller.signal.aborted) {

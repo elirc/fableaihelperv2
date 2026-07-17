@@ -38,8 +38,13 @@ export class PublicSettingsStore {
   /** Internal-only writes (e.g. credential flags); bypasses the renderer patch schema. */
   async replace(next: PublicSettings): Promise<PublicSettings> {
     this.cache = next;
-    this.writeChain = this.writeChain.then(() => writeJsonFile(this.filePath, next));
-    await this.writeChain;
+    // Chain writes so they reach disk in order, but never let a failed write
+    // poison the chain — that would reject every future write unattempted.
+    const write = this.writeChain
+      .catch(() => undefined)
+      .then(() => writeJsonFile(this.filePath, next));
+    this.writeChain = write.catch(() => undefined);
+    await write;
     return next;
   }
 

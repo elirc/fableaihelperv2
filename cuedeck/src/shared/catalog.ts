@@ -30,6 +30,7 @@ export const PROVIDERS: Record<string, ProviderMeta> = {
     freePolicy: 'provider-free-tier',
     supportsAbort: true,
     kind: 'stt',
+    credentialId: 'groq',
     dataUseUrl: 'https://groq.com/privacy-policy',
     disclosure:
       'Audio clips are sent to Groq for transcription. Free-tier quotas apply and may change.',
@@ -52,6 +53,7 @@ export const PROVIDERS: Record<string, ProviderMeta> = {
     freePolicy: 'provider-free-tier',
     supportsAbort: true,
     kind: 'stt',
+    credentialId: 'gemini',
     dataUseUrl: 'https://ai.google.dev/gemini-api/docs/pricing',
     disclosure:
       'Audio clips are sent to Google. Content submitted on the Gemini API free tier may be used to improve Google products.',
@@ -66,6 +68,17 @@ export const PROVIDERS: Record<string, ProviderMeta> = {
     dataUseUrl: 'https://ai.google.dev/gemini-api/docs/pricing',
     disclosure:
       'Transcripts, your profile, and session notes are sent to Google. Content submitted on the Gemini API free tier may be used to improve Google products.',
+  },
+  cerebras: {
+    id: 'cerebras',
+    displayName: 'Cerebras (fastest free tier)',
+    location: 'cloud',
+    freePolicy: 'provider-free-tier',
+    supportsAbort: true,
+    kind: 'llm',
+    dataUseUrl: 'https://www.cerebras.ai/privacy',
+    disclosure:
+      'Transcripts, your profile, and session notes are sent to Cerebras. Free-tier quotas apply and may change.',
   },
   openrouter: {
     id: 'openrouter',
@@ -119,9 +132,11 @@ export const CLOUD_MODELS = {
   groqSttModel: 'whisper-large-v3-turbo',
   groqLlmModel: 'llama-3.1-8b-instant',
   geminiModel: 'gemini-2.5-flash',
+  cerebrasModel: 'llama3.1-8b',
   openRouterDefaultModel: 'openrouter/free',
 } as const;
 
+/** Small instruct models suggested in the UI when Ollama has none installed. */
 export const RECOMMENDED_OLLAMA_MODELS = [
   'qwen2.5:3b-instruct',
   'llama3.2:3b',

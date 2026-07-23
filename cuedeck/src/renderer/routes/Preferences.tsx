@@ -8,6 +8,7 @@ import type {
   ProviderProbe,
   PublicSettings,
 } from '../../shared/domain';
+import { filterHistory } from '../../shared/historySearch';
 
 interface Props {
   settings: PublicSettings;
@@ -645,6 +646,8 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
 
 function HistorySection({ settings, onSettingsChanged }: Props): React.JSX.Element {
   const [items, setItems] = useState<HistoryItem[]>([]);
+  const [query, setQuery] = useState('');
+  const visible = filterHistory(items, query);
 
   const refresh = async () => setItems(await window.cuedeck.listHistory());
   useEffect(() => {
@@ -736,9 +739,23 @@ function HistorySection({ settings, onSettingsChanged }: Props): React.JSX.Eleme
           Delete all
         </button>
       </div>
+      {items.length > 0 && (
+        <label className="field">
+          <span>
+            Search saved sessions
+            {query.trim() !== '' ? ` — ${visible.length} of ${items.length} shown` : ''}
+          </span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by any words in the transcript or response"
+            data-testid="history-search"
+          />
+        </label>
+      )}
       <table className="history">
         <tbody>
-          {items.map((i) => (
+          {visible.map((i) => (
             <tr key={i.id}>
               <td>{new Date(i.createdAt).toLocaleString()}</td>
               <td>
@@ -763,6 +780,7 @@ function HistorySection({ settings, onSettingsChanged }: Props): React.JSX.Eleme
         </tbody>
       </table>
       {settings.historyEnabled && items.length === 0 && <p>No saved sessions yet.</p>}
+      {items.length > 0 && visible.length === 0 && <p>No sessions match your search.</p>}
     </>
   );
 }

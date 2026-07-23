@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { answerStats } from '../../shared/answerStats';
 import type { AnswerMode, PublicError, PublicSettings, TargetSeconds } from '../../shared/domain';
+import { SilenceEndpointer } from '../../shared/endpointing';
 import { publicError } from '../../shared/errors';
+import { PRACTICE_CATEGORIES, PracticeDeck, type PracticeCategory } from '../../shared/practice';
 import { ClipRecorder } from '../audio/recorder';
+import { resolveShortcut } from '../state/shortcuts';
 import { coachReducer, initialCoachState, isActivePhase } from '../state/sessionMachine';
 
 interface Props {
@@ -34,6 +38,11 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   const sessionRef = useRef<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [liveMessage, setLiveMessage] = useState('');
+  const [notes, setNotes] = useState('');
+  const notesRef = useRef('');
+  const [practiceCategory, setPracticeCategory] = useState<PracticeCategory | 'all'>('all');
+  const deckRef = useRef<PracticeDeck | null>(null);
+  const [dealtCount, setDealtCount] = useState(0);
   const optionsRef = useRef<{ answerMode: AnswerMode; targetSeconds: TargetSeconds }>({
     answerMode: settings.answerMode,
     targetSeconds: settings.targetSeconds,
@@ -42,6 +51,16 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   useEffect(() => {
     optionsRef.current = { answerMode: settings.answerMode, targetSeconds: settings.targetSeconds };
   }, [settings.answerMode, settings.targetSeconds]);
+
+  useEffect(() => {
+    // Ref mirror so callbacks captured at record start see current notes.
+    notesRef.current = notes;
+  }, [notes]);
+
+  const sessionNotesOption = () => {
+    const trimmed = notesRef.current.trim();
+    return trimmed === '' ? undefined : trimmed;
+  };
 
   useEffect(() => {
     dispatch({ type: 'configured', ready: settings.onboardingComplete });
@@ -66,7 +85,11 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       await window.cuedeck.submitSession(
         sessionId,
         clip.wav,
-        { ...optionsRef.current, language: settings.sttLanguage },
+        {
+          ...optionsRef.current,
+          language: settings.sttLanguage,
+          sessionNotes: sessionNotesOption(),
+        },
         clip.encodeMs,
       );
       dispatch({ type: 'submitted', sessionId });
@@ -79,8 +102,15 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     const sessionId = crypto.randomUUID();
     sessionRef.current = sessionId;
     dispatch({ type: 'arm', sessionId });
+    const endpointer = settings.autoStopOnSilence ? new SilenceEndpointer() : null;
     const recorder = new ClipRecorder(settings.maxClipSeconds, {
-      onLevel: (rms, peak, elapsedMs) => dispatch({ type: 'meter', rms, peak, elapsedMs }),
+      onLevel: (rms, peak, elapsedMs) => {
+        dispatch({ type: 'meter', rms, peak, elapsedMs });
+        if (endpointer?.push(rms, elapsedMs)) {
+          setLiveMessage('Pause detected — responding.');
+          void stopRecording();
+        }
+      },
       onAutoStop: () => void stopRecording(),
     });
     recorderRef.current = recorder;
@@ -94,7 +124,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       await recorder.abort();
       dispatch({ type: 'capture-failed', error: asCaptureError(err) });
     }
-  }, [settings.maxClipSeconds, stopRecording]);
+  }, [settings.maxClipSeconds, settings.autoStopOnSilence, stopRecording]);
 
   const cancel = useCallback(async () => {
     const sessionId = sessionRef.current;
@@ -114,7 +144,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       if (!state.transcript.trim()) return;
       const sessionId = crypto.randomUUID();
       sessionRef.current = sessionId;
-      const options = { ...optionsRef.current, ...overrides };
+      const options = { ...optionsRef.current, ...overrides, sessionNotes: sessionNotesOption() };
       dispatch({ type: 'regenerate', sessionId, transcript: state.transcript });
       await window.cuedeck.regenerate(sessionId, state.transcript, options).catch((err) => {
         dispatch({ type: 'capture-failed', error: asPublicError(err) });
@@ -130,6 +160,21 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     window.setTimeout(() => setCopied(false), 2000);
   }, [state.answer]);
 
+  useEffect(() => {
+    // Ctrl+L listen/stop, Esc cancel, Ctrl+Shift+C copy (see shortcuts.ts).
+    const onKeyDown = (event: KeyboardEvent) => {
+      const action = resolveShortcut(event, state.phase);
+      if (!action) return;
+      event.preventDefault();
+      if (action === 'start-listening') void startRecording();
+      else if (action === 'stop-listening') void stopRecording();
+      else if (action === 'cancel') void cancel();
+      else if (action === 'copy-answer' && state.answer) void copyAnswer();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [state.phase, state.answer, startRecording, stopRecording, cancel, copyAnswer]);
+
   const setMode = async (answerMode: AnswerMode) => {
     await window.cuedeck.updatePublicSettings({ answerMode });
     await onSettingsChanged();
@@ -140,12 +185,34 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     await onSettingsChanged();
   };
 
+  const setAutoStop = async (autoStopOnSilence: boolean) => {
+    await window.cuedeck.updatePublicSettings({ autoStopOnSilence });
+    await onSettingsChanged();
+  };
+
+  const drawPracticeQuestion = () => {
+    if (!deckRef.current) deckRef.current = new PracticeDeck(practiceCategory);
+    const deck = deckRef.current;
+    const question = deck.draw();
+    dispatch({ type: 'edit-transcript', text: question.text });
+    setDealtCount(deck.size - deck.remaining);
+    setLiveMessage('Practice question ready.');
+  };
+
+  const changePracticeCategory = (category: PracticeCategory | 'all') => {
+    setPracticeCategory(category);
+    deckRef.current = null;
+    setDealtCount(0);
+  };
+
   const isRecording = state.phase === 'recording';
   const busy = isActivePhase(state.phase) || state.phase === 'cancelling';
   const localMode =
     settings.sttProviderId === 'local-whisper' && settings.llmProviderId === 'ollama';
   const compact = settings.compactMode;
   const showSilenceWarning = isRecording && state.silentSoFar && state.elapsedMs > 3000;
+  const stats =
+    state.phase === 'complete' ? answerStats(state.answer, settings.targetSeconds) : null;
 
   return (
     <div className={`app-shell${compact ? ' compact' : ''}`}>
@@ -184,6 +251,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
                 onClick={() => void startRecording()}
                 disabled={busy || state.phase === 'unconfigured'}
                 data-testid="listen-button"
+                title="Ctrl+L"
               >
                 Listen
               </button>
@@ -192,12 +260,13 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
                 className="primary"
                 onClick={() => void stopRecording()}
                 data-testid="stop-button"
+                title="Ctrl+L"
               >
                 Stop &amp; respond
               </button>
             )}
             {busy && (
-              <button onClick={() => void cancel()} data-testid="cancel-button">
+              <button onClick={() => void cancel()} data-testid="cancel-button" title="Esc">
                 Cancel
               </button>
             )}
@@ -208,12 +277,62 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
               <div style={{ width: `${Math.min(100, state.level.rms * 700)}%` }} />
             </div>
           </div>
+          <label className="row auto-stop">
+            <input
+              type="checkbox"
+              style={{ width: 'auto' }}
+              checked={settings.autoStopOnSilence}
+              onChange={(e) => void setAutoStop(e.target.checked)}
+              data-testid="auto-stop-toggle"
+            />
+            <span>Auto-respond when the speaker pauses</span>
+          </label>
           {showSilenceWarning && (
             <p className="warn-banner" role="alert">
               No audio detected yet — check that the conversation audio is playing on this computer.
             </p>
           )}
         </section>
+
+        {!compact && (
+          <section className="card">
+            <h2>
+              Practice
+              {dealtCount > 0 && deckRef.current && (
+                <span className="deck-progress" data-testid="practice-progress">
+                  {dealtCount} of {deckRef.current.size}
+                </span>
+              )}
+            </h2>
+            <div className="row">
+              <select
+                aria-label="practice category"
+                value={practiceCategory}
+                onChange={(e) => changePracticeCategory(e.target.value as PracticeCategory | 'all')}
+                data-testid="practice-category"
+                style={{ maxWidth: 220 }}
+              >
+                {PRACTICE_CATEGORIES.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="small"
+                onClick={drawPracticeQuestion}
+                disabled={busy}
+                data-testid="practice-draw"
+              >
+                Draw a question
+              </button>
+            </div>
+            <p className="hint">
+              The question lands in “Heard” below — answer it aloud first, then press “Respond to
+              edited text” to compare with a suggested response.
+            </p>
+          </section>
+        )}
 
         {state.error && (
           <div className="error-banner" role="alert" data-testid="error-banner">
@@ -265,6 +384,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
                 onClick={() => void copyAnswer()}
                 disabled={!state.answer}
                 data-testid="copy-button"
+                title="Ctrl+Shift+C"
               >
                 {copied ? 'Copied ✓' : 'Copy'}
               </button>
@@ -282,6 +402,16 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             {state.answer}
             {state.phase === 'generating' && <span className="caret">&nbsp;</span>}
           </div>
+          {stats && (
+            <p className="answer-stats" data-testid="answer-stats">
+              ~{stats.seconds} s spoken ({stats.words} words) —{' '}
+              {stats.verdict === 'on-target'
+                ? `about right for your ${settings.targetSeconds} s target`
+                : stats.verdict === 'long'
+                  ? `longer than your ${settings.targetSeconds} s target`
+                  : `shorter than your ${settings.targetSeconds} s target`}
+            </p>
+          )}
           <div className="mode-row" role="group" aria-label="response follow-ups">
             <button
               className="small"
@@ -324,6 +454,30 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
 
         {!compact && (
           <section className="card">
+            <h2>
+              Session notes
+              <span className="actions">
+                {notes !== '' && (
+                  <button className="small" onClick={() => setNotes('')} data-testid="notes-clear">
+                    Clear
+                  </button>
+                )}
+              </span>
+            </h2>
+            <textarea
+              aria-label="session notes"
+              rows={2}
+              maxLength={4000}
+              placeholder="Optional context for this call — company, role, points to hit. Sent with every response request."
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              data-testid="session-notes-input"
+            />
+          </section>
+        )}
+
+        {!compact && (
+          <section className="card">
             <h2>Default mode</h2>
             <div className="mode-row" role="group" aria-label="answer mode">
               {(['natural', 'concise', 'bullets', 'star', 'clarify'] as AnswerMode[]).map(
@@ -361,6 +515,9 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
           <>
             <span>•</span>
             <span>{(state.metrics.totalMs / 1000).toFixed(1)} s total</span>
+            {state.metrics.transcribeMs !== undefined && state.metrics.transcribeMs > 0 && (
+              <span>({(state.metrics.transcribeMs / 1000).toFixed(1)} s transcribe)</span>
+            )}
             {state.metrics.firstTokenMs !== undefined && (
               <span>({(state.metrics.firstTokenMs / 1000).toFixed(1)} s to first words)</span>
             )}

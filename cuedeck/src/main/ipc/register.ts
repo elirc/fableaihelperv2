@@ -179,6 +179,9 @@ export function registerIpc(services: AppServices): void {
 
   secureHandle('capture:arm', (_event, raw) => {
     const { sessionId } = captureArmSchema.parse(raw);
+    // Warm the LLM while the clip is still being recorded so the model's
+    // cold start never lands on the time-to-first-token path.
+    void services.coordinator.prewarm();
     return services.captureGrant.arm(sessionId);
   });
 

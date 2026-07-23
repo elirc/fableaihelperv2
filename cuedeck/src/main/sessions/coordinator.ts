@@ -118,6 +118,26 @@ export class SessionCoordinator {
     }
   }
 
+  /**
+   * Best-effort LLM warmup with no session attached, fired when capture is
+   * armed. Recording takes seconds; loading the model during them (instead
+   * of during transcription) takes the cold start fully out of the
+   * time-to-first-token path. Failures are swallowed — the real generate
+   * call reports them with proper error mapping.
+   */
+  async prewarm(): Promise<void> {
+    try {
+      const settings = await this.deps.getSettings();
+      const llm = this.deps.registry.getLlm(settings.llmProviderId);
+      if (!llm.warmup) return;
+      await llm
+        .warmup(settings.llmModelId, AbortSignal.timeout(TIMEOUTS.warmup))
+        .catch(() => undefined);
+    } catch {
+      // Unknown provider IDs fail the session later with a precise error.
+    }
+  }
+
   /** Full pipeline: validate WAV -> STT -> prompt -> streamed LLM. */
   async submit(
     sessionId: string,

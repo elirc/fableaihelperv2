@@ -203,6 +203,75 @@ test.describe('coach workflow', () => {
     }
   });
 
+  test('drawing a practice question fills the transcript and streams an answer with pace stats', async () => {
+    const ollama = await startFakeOllama({
+      deltas: ['I would focus on ', 'the outcome and ', 'what I learned.'],
+    });
+    const { app } = await launchApp({
+      seedSettings: { ...READY_SETTINGS, ollamaBaseUrl: ollama.baseUrl },
+    });
+    try {
+      const page = await app.firstWindow();
+      await page.getByTestId('practice-draw').click();
+      const question = await page.getByTestId('transcript-input').inputValue();
+      expect(question.length).toBeGreaterThan(10);
+      expect(/[?.]$/.test(question)).toBe(true);
+      await expect(page.getByTestId('practice-progress')).toContainText('1 of');
+      // A drawn question flows through the normal respond pipeline.
+      await page.getByTestId('regenerate-button').click();
+      await expect(page.getByTestId('answer-text')).toContainText('what I learned.', {
+        timeout: 15_000,
+      });
+      // The finished answer shows the speaking-pace estimate.
+      await expect(page.getByTestId('answer-stats')).toContainText('words');
+      await expect(page.getByTestId('answer-stats')).toContainText('s target');
+    } finally {
+      await app.close();
+      await ollama.close();
+    }
+  });
+
+  test('session notes are sent to the model server inside the fenced block', async () => {
+    const ollama = await startFakeOllama({ deltas: ['Noted.'] });
+    const { app } = await launchApp({
+      seedSettings: { ...READY_SETTINGS, ollamaBaseUrl: ollama.baseUrl },
+    });
+    try {
+      const page = await app.firstWindow();
+      await page.getByTestId('session-notes-input').fill('Screening call with Acme for QA lead.');
+      await page.getByTestId('transcript-input').fill('Why do you want this job?');
+      await page.getByTestId('regenerate-button').click();
+      await expect(page.getByTestId('answer-text')).toContainText('Noted.', { timeout: 15_000 });
+      const body = ollama.chatBodies()[0];
+      expect(body).toContain('<session_notes>');
+      expect(body).toContain('Screening call with Acme for QA lead.');
+    } finally {
+      await app.close();
+      await ollama.close();
+    }
+  });
+
+  test('Escape cancels a slow generation from the keyboard', async () => {
+    const ollama = await startFakeOllama({
+      deltas: Array.from({ length: 40 }, (_, i) => `chunk${i} `),
+      delayMs: 250,
+    });
+    const { app } = await launchApp({
+      seedSettings: { ...READY_SETTINGS, ollamaBaseUrl: ollama.baseUrl },
+    });
+    try {
+      const page = await app.firstWindow();
+      await page.getByTestId('transcript-input').fill('A question that takes a while.');
+      await page.getByTestId('regenerate-button').click();
+      await expect(page.getByTestId('answer-text')).toContainText('chunk0', { timeout: 15_000 });
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('phase-chip')).toContainText('Ready', { timeout: 10_000 });
+    } finally {
+      await app.close();
+      await ollama.close();
+    }
+  });
+
   test('compact mode keeps capture controls and status visible', async () => {
     const { app } = await launchApp({ seedSettings: { ...READY_SETTINGS, compactMode: true } });
     try {

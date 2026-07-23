@@ -36,6 +36,13 @@ export const CAPTURE_GRANT_TTL_MS = 8_000;
 /** Model-independent cap applied to generated answers (characters). */
 export const ANSWER_CHAR_CAP = 4_000;
 
+/**
+ * Average spoken pace assumed everywhere a word count is converted to
+ * speaking time: the prompt's word target and the answer pace estimate
+ * must stay in agreement, so both derive from this one number.
+ */
+export const SPOKEN_WORDS_PER_SECOND = 2.5;
+
 export const OLLAMA_DEFAULT_BASE_URL = 'http://127.0.0.1:11434';
 
 /** Hosts the privileged process may contact. Loopback is always allowed. */
@@ -85,6 +92,7 @@ export const DEFAULT_SETTINGS: PublicSettings = {
   targetSeconds: 30,
   fontScale: 1,
   maxClipSeconds: DEFAULT_MAX_CLIP_SECONDS,
+  autoStopOnSilence: true,
   ollamaBaseUrl: OLLAMA_DEFAULT_BASE_URL,
   onboardingComplete: false,
   consentAcknowledgedAt: null,

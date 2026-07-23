@@ -289,6 +289,31 @@ a {
   }
 }
 
+.answer-stats {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: 6px 0 10px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: 8px 0 0;
+}
+
+.deck-progress {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.auto-stop {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
 .mode-row {
   display: flex;
   gap: 6px;

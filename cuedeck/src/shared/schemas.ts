@@ -35,6 +35,7 @@ export const publicSettingsSchema = z.object({
   targetSeconds: targetSecondsSchema,
   fontScale: z.number().min(0.9).max(1.6),
   maxClipSeconds: z.number().int().min(30).max(120),
+  autoStopOnSilence: z.boolean(),
   activeProfileId: z.string().optional(),
   ollamaBaseUrl: z.string().url(),
   onboardingComplete: z.boolean(),

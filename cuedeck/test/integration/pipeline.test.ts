@@ -263,6 +263,35 @@ describe('session pipeline', () => {
     expect(warmupSignal!.aborted).toBe(true);
   });
 
+  it('prewarm loads the configured LLM model outside any session', async () => {
+    let warmedModel: string | null = null;
+    const { coordinator, events } = makeHarness({
+      warmup: async (modelId) => {
+        warmedModel = modelId;
+      },
+    });
+    await coordinator.prewarm();
+    expect(warmedModel).toBe('test-llm');
+    // No session exists, so prewarm must emit nothing to the renderer.
+    expect(events).toHaveLength(0);
+  });
+
+  it('prewarm swallows warmup failures silently', async () => {
+    const { coordinator, events } = makeHarness({
+      warmup: async () => {
+        throw new Error('model is cold and the disk is slow');
+      },
+    });
+    await expect(coordinator.prewarm()).resolves.toBeUndefined();
+    expect(events).toHaveLength(0);
+  });
+
+  it('prewarm is a no-op for providers without warmup support', async () => {
+    const { coordinator, events } = makeHarness({});
+    await expect(coordinator.prewarm()).resolves.toBeUndefined();
+    expect(events).toHaveLength(0);
+  });
+
   it('saves history only when enabled', async () => {
     const off = makeHarness({ historyEnabled: false });
     await off.coordinator.submit(SID, sineWav(2), OPTIONS, 5);

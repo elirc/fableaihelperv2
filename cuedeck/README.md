@@ -73,6 +73,30 @@ and launches the Electron app pointing at them. The first window is the onboardi
 After onboarding you land on the Coach window: press **Listen**, let it capture a clip, and a
 response card streams in. Settings live in a separate Preferences window.
 
+## The coach window
+
+Everything is tuned for one loop: someone asks a question, you get a speakable response fast.
+
+- **Auto-respond on pause** (on by default, toggleable): while listening, the app watches the
+  audio level and stops + submits by itself about 1.6 s after the speaker finishes — no
+  reaction-time lag from clicking Stop. Turn it off to control the clip manually.
+- **Low-latency pipeline**: the response model is pre-warmed the moment recording starts (the
+  cold start happens while the other person is still talking), the LLM warms again during
+  transcription, and answers stream token by token. The status rail shows the timing split
+  (transcribe / first words / total) after each response.
+- **Session notes**: a small free-text field (company, role, points to hit) sent with every
+  request and used to ground the response, alongside your profile. Cleared per call, never
+  stored.
+- **Practice deck**: draw from ~30 built-in interview questions (by category) into the
+  transcript box, answer aloud, then generate a suggested response to compare. Works fully
+  offline — it reuses the same respond pipeline.
+- **Speaking-pace estimate**: each finished answer shows its word count and estimated speaking
+  time against your target (15/30/60 s), so you know whether the draft fits before you use it.
+- **Keyboard shortcuts**: `Ctrl+L` listen / stop &amp; respond, `Esc` cancel, `Ctrl+Shift+C`
+  copy the response.
+- **History search** (Preferences → History, only if history is enabled): filter saved
+  sessions by any words in the transcript or response.
+
 App data (settings, encrypted keys, profiles, optional history, downloaded models) lives under
 `%APPDATA%\CueDeck\`. Deleting that folder resets the app, including onboarding. See
 [PRIVACY.md](PRIVACY.md) for the full file-by-file list.
@@ -118,7 +142,8 @@ cuedeck/
 │  │  ├─ audio/recorder.ts  Clip recording via getDisplayMedia + audio worklet
 │  │  └─ state/             Session state machine
 │  └─ shared/               Pure TypeScript shared by all processes: domain types, Zod schemas,
-│                           audio math, prompt building, stream parsing, redaction, constants, catalog
+│                           audio math, prompt building, stream parsing, redaction, constants,
+│                           catalog, silence endpointing, practice deck, answer stats, history search
 ├─ test/
 │  ├─ unit/                 Vitest unit tests for src/shared and pure main-process logic
 │  ├─ integration/          Pipeline + provider HTTP tests against fake local servers

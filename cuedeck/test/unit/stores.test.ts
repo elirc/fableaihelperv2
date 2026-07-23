@@ -43,6 +43,19 @@ describe('migrateSettings', () => {
     const migrated = migrateSettings({ schemaVersion: 1, fontScale: 99 });
     expect(migrated.fontScale).toBe(1);
   });
+
+  it('fills fields added after the file was written (autoStopOnSilence)', () => {
+    // A settings.json from a build that predates the field must load with
+    // the default instead of being discarded wholesale.
+    const migrated = migrateSettings({ schemaVersion: 1, alwaysOnTop: true });
+    expect(migrated.autoStopOnSilence).toBe(true);
+    expect(migrated.alwaysOnTop).toBe(true);
+  });
+
+  it('preserves a user-disabled auto-stop toggle across load', () => {
+    const migrated = migrateSettings({ schemaVersion: 1, autoStopOnSilence: false });
+    expect(migrated.autoStopOnSilence).toBe(false);
+  });
 });
 
 describe('PublicSettingsStore', () => {

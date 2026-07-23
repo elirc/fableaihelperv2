@@ -178,6 +178,37 @@ describe('coachReducer', () => {
     expect(state.silentSoFar).toBe(false);
   });
 
+  it('edit-transcript works in the idle phases (practice draw and manual edits)', () => {
+    // Ready: the practice deck writes a drawn question here.
+    let state = run([
+      { type: 'configured', ready: true },
+      { type: 'edit-transcript', text: 'Tell me about yourself.' },
+    ]);
+    expect(state.transcript).toBe('Tell me about yourself.');
+    // Complete: the user can rewrite the question and regenerate.
+    state = run(
+      [
+        {
+          type: 'session-event',
+          event: { type: 'answer-complete', sessionId: SID, text: 'done', metrics: { totalMs: 1 } },
+        },
+        { type: 'edit-transcript', text: 'A follow-up question?' },
+      ],
+      { ...initialCoachState, sessionId: SID, phase: 'generating' },
+    );
+    expect(state.transcript).toBe('A follow-up question?');
+  });
+
+  it('edit-transcript is ignored while the pipeline owns the transcript', () => {
+    for (const phase of ['transcribing', 'generating'] as const) {
+      const state = coachReducer(
+        { ...initialCoachState, sessionId: SID, phase, transcript: 'original' },
+        { type: 'edit-transcript', text: 'overwrite attempt' },
+      );
+      expect(state.transcript).toBe('original');
+    }
+  });
+
   it('reset returns to ready and clears output', () => {
     const state = run([
       { type: 'arm', sessionId: SID },

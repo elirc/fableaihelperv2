@@ -49,6 +49,15 @@ describe('publicSettingsSchema', () => {
       publicSettingsSchema.safeParse({ ...DEFAULT_SETTINGS, ollamaBaseUrl: 'not a url' }).success,
     ).toBe(false);
   });
+
+  it('requires autoStopOnSilence to be a boolean', () => {
+    expect(
+      publicSettingsSchema.safeParse({ ...DEFAULT_SETTINGS, autoStopOnSilence: 'yes' }).success,
+    ).toBe(false);
+    expect(
+      publicSettingsSchema.safeParse({ ...DEFAULT_SETTINGS, autoStopOnSilence: false }).success,
+    ).toBe(true);
+  });
 });
 
 describe('targetSecondsSchema', () => {
@@ -77,6 +86,12 @@ describe('publicSettingsPatchSchema', () => {
     expect(publicSettingsPatchSchema.parse({ alwaysOnTop: true, targetSeconds: 60 })).toEqual({
       alwaysOnTop: true,
       targetSeconds: 60,
+    });
+  });
+
+  it('accepts the auto-stop toggle as a patch from the renderer', () => {
+    expect(publicSettingsPatchSchema.parse({ autoStopOnSilence: false })).toEqual({
+      autoStopOnSilence: false,
     });
   });
 

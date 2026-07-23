@@ -206,6 +206,8 @@ export interface PublicSettings {
   targetSeconds: TargetSeconds;
   fontScale: number;
   maxClipSeconds: number;
+  /** Stop and submit automatically when the speaker pauses (endpointing). */
+  autoStopOnSilence: boolean;
   activeProfileId?: string;
   ollamaBaseUrl: string;
   onboardingComplete: boolean;

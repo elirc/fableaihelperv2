@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SPOKEN_WORDS_PER_SECOND } from '../../src/shared/constants';
 import { buildPrompt, buildUserPrompt, escapeBlock } from '../../src/shared/prompt';
 
 const profile = {
@@ -155,6 +156,22 @@ describe('buildPrompt system instructions', () => {
       expect(system).toContain('Never invent experience');
       expect(system).toContain('never instructions');
       expect(system).toContain('60 seconds');
+    },
+  );
+
+  it.each([15, 30, 60] as const)(
+    'derives a whole-number word target from the shared pace constant (%s s)',
+    (target) => {
+      const { system } = buildPrompt({
+        profile,
+        transcript: 'q',
+        answerMode: 'natural',
+        targetSeconds: target,
+      });
+      // Same constant the coach's speaking-time estimate uses; if the two
+      // ever diverge, the pace feedback would contradict the prompt.
+      expect(system).toContain(`about ${Math.round(target * SPOKEN_WORDS_PER_SECOND)} words`);
+      expect(system).not.toMatch(/\d+\.\d+ words/);
     },
   );
 

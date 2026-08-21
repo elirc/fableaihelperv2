@@ -13,7 +13,7 @@ import type {
   SessionState,
 } from '../../shared/domain';
 import { CoachError, toPublicError } from '../../shared/errors';
-import { buildPrompt } from '../../shared/prompt';
+import { answerTemperature, answerTokenBudget, buildPrompt } from '../../shared/prompt';
 import { capText } from '../../shared/streaming';
 import type { ProviderRegistry } from '../providers/registry';
 
@@ -119,23 +119,46 @@ export class SessionCoordinator {
   }
 
   /**
-   * Best-effort LLM warmup with no session attached, fired when capture is
-   * armed. Recording takes seconds; loading the model during them (instead
-   * of during transcription) takes the cold start fully out of the
-   * time-to-first-token path. Failures are swallowed — the real generate
-   * call reports them with proper error mapping.
+   * Best-effort STT + LLM warmup with no session attached, fired when
+   * capture is armed. Recording takes seconds; loading both models during
+   * them (instead of during transcription) takes the cold starts fully out
+   * of the time-to-first-token path. Failures are swallowed — the real
+   * transcribe/generate calls report them with proper error mapping.
    */
   async prewarm(): Promise<void> {
+    let settings: CoordinatorSettings;
     try {
-      const settings = await this.deps.getSettings();
-      const llm = this.deps.registry.getLlm(settings.llmProviderId);
-      if (!llm.warmup) return;
-      await llm
-        .warmup(settings.llmModelId, AbortSignal.timeout(TIMEOUTS.warmup))
-        .catch(() => undefined);
+      settings = await this.deps.getSettings();
+    } catch {
+      return;
+    }
+    const jobs: Promise<unknown>[] = [];
+    try {
+      const stt = this.deps.registry.getStt(settings.sttProviderId);
+      if (stt.warmup) {
+        // A transcribe that arrives mid-load joins this load, so its timeout
+        // must be at least as patient as the transcribe stage itself.
+        const timeout = stt.meta.location === 'local' ? TIMEOUTS.localStt : TIMEOUTS.warmup;
+        jobs.push(
+          stt.warmup(settings.sttModelId, AbortSignal.timeout(timeout)).catch(() => undefined),
+        );
+      }
     } catch {
       // Unknown provider IDs fail the session later with a precise error.
     }
+    try {
+      const llm = this.deps.registry.getLlm(settings.llmProviderId);
+      if (llm.warmup) {
+        jobs.push(
+          llm
+            .warmup(settings.llmModelId, AbortSignal.timeout(TIMEOUTS.warmup))
+            .catch(() => undefined),
+        );
+      }
+    } catch {
+      // Same: surfaced by the session, not the warmup.
+    }
+    await Promise.all(jobs);
   }
 
   /** Full pipeline: validate WAV -> STT -> prompt -> streamed LLM. */
@@ -281,6 +304,8 @@ export class SessionCoordinator {
         user: prompt.user,
         modelId: settings.llmModelId,
         signal,
+        temperature: answerTemperature(options.answerMode),
+        maxTokens: answerTokenBudget(options.targetSeconds),
       })) {
         if (!this.isCurrent(context)) return;
         if (!sawFirst) {

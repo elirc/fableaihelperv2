@@ -363,4 +363,62 @@ describe('OpenRouterProvider', () => {
     );
     expect(deltas[0].text).toBe('free answer');
   });
+
+  it('lists paid models with visible pricing when the opt-in is on, cheapest first', async () => {
+    const s = await server((req, res) => {
+      if (req.url === '/models') {
+        res.end(
+          JSON.stringify({
+            data: [
+              {
+                id: 'meta/llama:free',
+                name: 'Llama free',
+                pricing: { prompt: '0', completion: '0' },
+              },
+              {
+                id: 'expensive/model',
+                name: 'Expensive',
+                pricing: { prompt: '0.00001', completion: '0.00006' },
+              },
+              {
+                id: 'cheap/model',
+                name: 'Cheap',
+                pricing: { prompt: '0.0000001', completion: '0.0000004' },
+              },
+              {
+                id: 'variable/model',
+                name: 'Variable',
+                pricing: { prompt: '-1', completion: '-1' },
+              },
+            ],
+          }),
+        );
+      } else res.writeHead(404).end();
+    });
+    const provider = new OpenRouterProvider(key, s.baseUrl, async () => true);
+    const models = await provider.listModels(new AbortController().signal);
+    expect(models.map((m) => m.id)).toEqual([
+      'openrouter/free',
+      'meta/llama:free',
+      'cheap/model',
+      'expensive/model',
+    ]);
+    const cheap = models.find((m) => m.id === 'cheap/model');
+    expect(cheap?.displayName).toContain('per 1M tokens');
+  });
+
+  it('generates with a paid model only when the opt-in is on', async () => {
+    const s = await server((req, res) => {
+      if (req.url === '/chat/completions') {
+        res.end(
+          `data: ${JSON.stringify({ choices: [{ delta: { content: 'paid answer' } }] })}\n\ndata: [DONE]\n\n`,
+        );
+      } else res.writeHead(404).end();
+    });
+    const provider = new OpenRouterProvider(key, s.baseUrl, async () => true);
+    const deltas = await collect(
+      provider.generate(request({ modelId: 'anthropic/claude-sonnet' })),
+    );
+    expect(deltas[0].text).toBe('paid answer');
+  });
 });

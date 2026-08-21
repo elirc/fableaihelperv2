@@ -128,6 +128,8 @@ function GeneralSection({ settings, onSettingsChanged }: Props): React.JSX.Eleme
           <option value={15}>15 seconds</option>
           <option value={30}>30 seconds</option>
           <option value={60}>60 seconds</option>
+          <option value={90}>90 seconds (technical explanations)</option>
+          <option value={120}>2 minutes (system design)</option>
         </select>
       </label>
       <label className="field">
@@ -320,6 +322,36 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
                 </option>
               ))}
             </select>
+          </label>
+        )}
+        {settings.llmProviderId === 'openrouter' && (
+          <label className="row" style={{ alignItems: 'flex-start' }}>
+            <input
+              type="checkbox"
+              style={{ width: 'auto', marginTop: 4 }}
+              checked={settings.allowPaidModels}
+              onChange={(e) =>
+                void update({ allowPaidModels: e.target.checked }).then(() =>
+                  loadModels('openrouter'),
+                )
+              }
+              data-testid="allow-paid-toggle"
+            />
+            <span>
+              Allow paid OpenRouter models. Usage is billed to your own OpenRouter credits — set a
+              spending limit on the key at{' '}
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void window.cuedeck.openExternal('https://openrouter.ai/keys');
+                }}
+              >
+                openrouter.ai/keys
+              </a>{' '}
+              before enabling. Prices per million tokens are shown in the model list, cheapest
+              first.
+            </span>
           </label>
         )}
         {settings.llmProviderId === 'ollama' && (

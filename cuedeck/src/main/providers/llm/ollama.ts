@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PROVIDERS } from '../../../shared/catalog';
-import { OLLAMA_KEEP_ALIVE, TIMEOUTS } from '../../../shared/constants';
+import { OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, TIMEOUTS } from '../../../shared/constants';
 import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { NdjsonParser } from '../../../shared/streaming';
@@ -104,7 +104,14 @@ export class OllamaProvider implements LlmProvider {
           // Keep the model resident between turns; reloading it dominates
           // first-token latency on consecutive answers otherwise.
           keep_alive: OLLAMA_KEEP_ALIVE,
-          options: { num_predict: 700, temperature: 0.6 },
+          options: {
+            num_predict: input.maxTokens ?? 700,
+            temperature: input.temperature ?? 0.6,
+            // Many Ollama models default to a 2-4k context; a long profile
+            // plus transcript would overflow it and Ollama drops the oldest
+            // tokens first — i.e. the system prompt — without any error.
+            num_ctx: OLLAMA_NUM_CTX,
+          },
           messages: [
             { role: 'system', content: input.system },
             { role: 'user', content: input.user },

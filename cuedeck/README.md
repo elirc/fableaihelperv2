@@ -30,7 +30,11 @@ Optional **cloud free-tier** adapters (Groq, Cerebras, Google Gemini, OpenRouter
 available for older hardware. They are labeled _free tier; limits may change_, require your own
 API key (stored encrypted with Windows DPAPI — the OS's built-in Data Protection API, which
 encrypts data so only your Windows user account can decrypt it), show each provider's data-use
-policy before use, and are never fallen back to silently. Paid model IDs are rejected by design.
+policy before use, and are never fallen back to silently. Paid model IDs are rejected by default;
+an explicit opt-in in Preferences unlocks paid OpenRouter models (billed to your own OpenRouter
+credits — set a spending limit on the key at openrouter.ai/keys), with per-million-token prices
+shown in the model list. Groq and Gemini paid tiers need no app change: the same key simply
+gains higher limits when billing is enabled on the provider's side.
 
 ## Prerequisites
 

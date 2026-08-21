@@ -19,6 +19,13 @@ export interface SttProvider {
   probe(signal: AbortSignal): Promise<ProviderProbe>;
   listModels(signal: AbortSignal): Promise<ModelSummary[]>;
   transcribe(input: TranscribeInput): Promise<TranscriptResult>;
+  /**
+   * Best-effort preparation fired when capture is armed, so a local model
+   * loads while the clip is still being recorded instead of inside the
+   * transcribe stage. Must never trigger a download; cheap, idempotent,
+   * safe to fail.
+   */
+  warmup?(modelId: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface AnswerRequest {
@@ -26,6 +33,10 @@ export interface AnswerRequest {
   user: string;
   modelId: string;
   signal: AbortSignal;
+  /** Sampling temperature; adapters fall back to a conservative default. */
+  temperature?: number;
+  /** Output-token ceiling for this answer. */
+  maxTokens?: number;
 }
 
 export interface LlmProvider {

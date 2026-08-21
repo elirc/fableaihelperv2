@@ -18,7 +18,12 @@ export class CerebrasLlmProvider extends OpenAiCompatibleLlmProvider {
         models: [
           {
             id: CLOUD_MODELS.cerebrasModel,
-            displayName: `${CLOUD_MODELS.cerebrasModel} (free tier)`,
+            displayName: `${CLOUD_MODELS.cerebrasModel} (recommended — best technical answers)`,
+            providerId: PROVIDERS.cerebras.id,
+          },
+          {
+            id: CLOUD_MODELS.cerebrasFastModel,
+            displayName: `${CLOUD_MODELS.cerebrasFastModel} (fastest, lighter answers)`,
             providerId: PROVIDERS.cerebras.id,
           },
         ],

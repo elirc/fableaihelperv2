@@ -9,11 +9,12 @@ export type ProcessingLocation = 'local' | 'cloud';
 
 export type FreePolicy = 'always-free-local' | 'provider-free-tier';
 
-/** Answer style requested by the user ('star' = Situation/Task/Action/Result). */
-export type AnswerMode = 'natural' | 'concise' | 'bullets' | 'star' | 'clarify';
+/** Answer style requested by the user ('star' = Situation/Task/Action/Result,
+ *  'technical' = answer-first structure for knowledge questions). */
+export type AnswerMode = 'natural' | 'concise' | 'bullets' | 'star' | 'clarify' | 'technical';
 
 /** Desired spoken length of the generated answer, in seconds. */
-export type TargetSeconds = 15 | 30 | 60;
+export type TargetSeconds = 15 | 30 | 60 | 90 | 120;
 
 /** Session lifecycle. One session = one capture→transcribe→generate pipeline. */
 export type SessionState =
@@ -210,6 +211,8 @@ export interface PublicSettings {
   autoStopOnSilence: boolean;
   activeProfileId?: string;
   ollamaBaseUrl: string;
+  /** Opt-in: let OpenRouter use paid models, billed to the user's own credits. */
+  allowPaidModels: boolean;
   onboardingComplete: boolean;
   consentAcknowledgedAt: string | null;
   credentials: Record<string, { configured: boolean }>;

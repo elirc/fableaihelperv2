@@ -13,7 +13,12 @@ export class GroqLlmProvider extends OpenAiCompatibleLlmProvider {
         models: [
           {
             id: CLOUD_MODELS.groqLlmModel,
-            displayName: `${CLOUD_MODELS.groqLlmModel} (free plan)`,
+            displayName: `${CLOUD_MODELS.groqLlmModel} (recommended — best technical answers)`,
+            providerId: PROVIDERS.groq.id,
+          },
+          {
+            id: CLOUD_MODELS.groqLlmFastModel,
+            displayName: `${CLOUD_MODELS.groqLlmFastModel} (fastest, lighter answers)`,
             providerId: PROVIDERS.groq.id,
           },
         ],

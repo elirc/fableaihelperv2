@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CLOUD_MODELS, PROVIDERS } from '../../../shared/catalog';
-import { TIMEOUTS } from '../../../shared/constants';
+import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, TIMEOUTS } from '../../../shared/constants';
 import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { SseParser } from '../../../shared/streaming';
@@ -107,8 +107,8 @@ export class GeminiLlmProvider implements LlmProvider {
           systemInstruction: { parts: [{ text: input.system }] },
           contents: [{ role: 'user', parts: [{ text: input.user }] }],
           generationConfig: {
-            maxOutputTokens: 1024,
-            temperature: 0.6,
+            maxOutputTokens: input.maxTokens ?? DEFAULT_MAX_TOKENS,
+            temperature: input.temperature ?? DEFAULT_TEMPERATURE,
             // 2.5 Flash "thinks" before answering by default, which delays
             // the first token by seconds. Short spoken cues don't need it.
             ...(supportsDisabledThinking(input.modelId)

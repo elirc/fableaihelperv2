@@ -76,7 +76,13 @@ async function bootstrap(): Promise<void> {
   registry.registerLlm(new GroqLlmProvider(keyFor('groq')));
   registry.registerLlm(new CerebrasLlmProvider(keyFor('cerebras')));
   registry.registerLlm(new GeminiLlmProvider(keyFor('gemini')));
-  registry.registerLlm(new OpenRouterProvider(keyFor('openrouter')));
+  registry.registerLlm(
+    new OpenRouterProvider(
+      keyFor('openrouter'),
+      undefined,
+      async () => (await settings.get()).allowPaidModels,
+    ),
+  );
 
   const diagnostics = new Diagnostics(
     app.getVersion(),

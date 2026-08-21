@@ -1,8 +1,21 @@
 import { z } from 'zod';
 import { PUBLIC_ERROR_CODES } from './domain';
 
-export const answerModeSchema = z.enum(['natural', 'concise', 'bullets', 'star', 'clarify']);
-export const targetSecondsSchema = z.union([z.literal(15), z.literal(30), z.literal(60)]);
+export const answerModeSchema = z.enum([
+  'natural',
+  'concise',
+  'bullets',
+  'star',
+  'clarify',
+  'technical',
+]);
+export const targetSecondsSchema = z.union([
+  z.literal(15),
+  z.literal(30),
+  z.literal(60),
+  z.literal(90),
+  z.literal(120),
+]);
 /** Session ids are renderer-generated UUIDs; rejecting anything else keeps
  *  ids safe to use in filenames and log lines. */
 export const sessionIdSchema = z
@@ -38,6 +51,7 @@ export const publicSettingsSchema = z.object({
   autoStopOnSilence: z.boolean(),
   activeProfileId: z.string().optional(),
   ollamaBaseUrl: z.string().url(),
+  allowPaidModels: z.boolean(),
   onboardingComplete: z.boolean(),
   consentAcknowledgedAt: z.string().nullable(),
   credentials: z.record(z.string(), z.object({ configured: z.boolean() })),

@@ -30,6 +30,14 @@ export const TIMEOUTS = {
  */
 export const OLLAMA_KEEP_ALIVE = '15m';
 
+/** Context window requested from Ollama; large enough for the system prompt,
+ *  a full profile, session notes, and a long transcript without truncation. */
+export const OLLAMA_NUM_CTX = 8192;
+
+/** Default sampling values when a request does not specify its own. */
+export const DEFAULT_TEMPERATURE = 0.6;
+export const DEFAULT_MAX_TOKENS = 1024;
+
 /** One-use capture grant lifetime (ms). */
 export const CAPTURE_GRANT_TTL_MS = 8_000;
 
@@ -94,6 +102,7 @@ export const DEFAULT_SETTINGS: PublicSettings = {
   maxClipSeconds: DEFAULT_MAX_CLIP_SECONDS,
   autoStopOnSilence: true,
   ollamaBaseUrl: OLLAMA_DEFAULT_BASE_URL,
+  allowPaidModels: false,
   onboardingComplete: false,
   consentAcknowledgedAt: null,
   credentials: {},

@@ -32,6 +32,7 @@ export class SttWorkerManager {
   private loadedModelId: string | null = null;
   private nextRequestId = 1;
   private status: 'idle' | 'loading' | 'ready' = 'idle';
+  private inflight: { modelId: string; promise: Promise<void> } | null = null;
 
   constructor(
     private readonly workerPath: string,
@@ -114,6 +115,36 @@ export class SttWorkerManager {
     if (this.loadedModelId === modelId && this.status === 'ready') return;
     // 'abort' does not fire for an already-aborted signal, so check first.
     if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+    // A warmup and a transcribe can ask for the same model back to back;
+    // joining the in-flight load (instead of killing it and starting over)
+    // is the whole point of warming up. The joiner's own abort only detaches
+    // it — the original load keeps its lifecycle.
+    if (this.inflight && this.inflight.modelId === modelId) {
+      await this.joinInflight(this.inflight.promise, signal);
+      return;
+    }
+    const load = this.loadModel(modelId, onProgress, signal);
+    this.inflight = { modelId, promise: load };
+    try {
+      await load;
+    } finally {
+      if (this.inflight?.promise === load) this.inflight = null;
+    }
+  }
+
+  private joinInflight(promise: Promise<void>, signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+  }
+
+  private async loadModel(
+    modelId: string,
+    onProgress: (p: ModelProgress) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
     this.stop();
     const worker = this.spawn();
     this.status = 'loading';

@@ -7,7 +7,15 @@
  */
 
 export type PracticeCategory =
-  'background' | 'behavioral' | 'motivation' | 'teamwork' | 'curveball';
+  | 'background'
+  | 'behavioral'
+  | 'motivation'
+  | 'teamwork'
+  | 'curveball'
+  | 'javascript'
+  | 'dotnet'
+  | 'web'
+  | 'system-design';
 
 export interface PracticeQuestion {
   id: string;
@@ -23,6 +31,10 @@ export const PRACTICE_CATEGORIES: Array<{ id: PracticeCategory | 'all'; label: s
   { id: 'motivation', label: 'Motivation' },
   { id: 'teamwork', label: 'Teamwork' },
   { id: 'curveball', label: 'Curveballs' },
+  { id: 'javascript', label: 'JavaScript & TypeScript' },
+  { id: 'dotnet', label: '.NET & C#' },
+  { id: 'web', label: 'Web, APIs & data' },
+  { id: 'system-design', label: 'System design' },
 ];
 
 export const PRACTICE_QUESTIONS: readonly PracticeQuestion[] = [
@@ -156,6 +168,160 @@ export const PRACTICE_QUESTIONS: readonly PracticeQuestion[] = [
     id: 'cb-free-day',
     category: 'curveball',
     text: 'If you had an extra free day every week, how would you use it?',
+  },
+  // javascript / typescript
+  {
+    id: 'js-event-loop',
+    category: 'javascript',
+    text: 'Explain the JavaScript event loop. What is the difference between microtasks and macrotasks?',
+  },
+  {
+    id: 'js-closures',
+    category: 'javascript',
+    text: 'What is a closure, and where have you used one in practice?',
+  },
+  {
+    id: 'js-equality',
+    category: 'javascript',
+    text: 'What is the difference between double equals and triple equals, and how does type coercion come into it?',
+  },
+  {
+    id: 'js-var-let-const',
+    category: 'javascript',
+    text: 'Explain var, let, and const, including hoisting and the temporal dead zone.',
+  },
+  {
+    id: 'js-async-errors',
+    category: 'javascript',
+    text: 'How do you handle errors with promises versus async await, and what mistakes do people commonly make?',
+  },
+  {
+    id: 'js-prototypes',
+    category: 'javascript',
+    text: 'How does prototypal inheritance work, and how do classes relate to it?',
+  },
+  {
+    id: 'ts-unknown-any',
+    category: 'javascript',
+    text: 'In TypeScript, what is the difference between unknown and any, and when would you use generics?',
+  },
+  {
+    id: 'js-debounce-throttle',
+    category: 'javascript',
+    text: 'What is the difference between debouncing and throttling, and when would you use each?',
+  },
+  {
+    id: 'react-rerender',
+    category: 'javascript',
+    text: 'What causes a React component to re-render, and how do you prevent unnecessary renders?',
+  },
+  // .net / c#
+  {
+    id: 'net-ienumerable-iqueryable',
+    category: 'dotnet',
+    text: 'What is the difference between IEnumerable and IQueryable, and why does it matter with Entity Framework?',
+  },
+  {
+    id: 'net-async-await',
+    category: 'dotnet',
+    text: 'How does async await work in C#, and what does ConfigureAwait false actually do?',
+  },
+  {
+    id: 'net-task-valuetask',
+    category: 'dotnet',
+    text: 'When would you use ValueTask instead of Task?',
+  },
+  {
+    id: 'net-di-lifetimes',
+    category: 'dotnet',
+    text: 'Explain transient, scoped, and singleton lifetimes in ASP.NET Core dependency injection, and a bug that comes from mixing them.',
+  },
+  {
+    id: 'net-middleware',
+    category: 'dotnet',
+    text: 'How does the ASP.NET Core middleware pipeline work, and why does registration order matter?',
+  },
+  {
+    id: 'net-ef-tracking',
+    category: 'dotnet',
+    text: 'What is change tracking in Entity Framework Core, and when would you use AsNoTracking?',
+  },
+  {
+    id: 'net-gc',
+    category: 'dotnet',
+    text: 'How does garbage collection work in .NET? What are generations, and what is IDisposable for?',
+  },
+  {
+    id: 'net-record-class',
+    category: 'dotnet',
+    text: 'What is the difference between a record, a class, and a struct in C#?',
+  },
+  // web, apis & data
+  {
+    id: 'web-http-caching',
+    category: 'web',
+    text: 'How does HTTP caching work? Explain Cache-Control, ETag, and when you would use each.',
+  },
+  {
+    id: 'web-idempotency',
+    category: 'web',
+    text: 'What does idempotent mean for an API, and how would you make a payment endpoint safe to retry?',
+  },
+  {
+    id: 'web-cors',
+    category: 'web',
+    text: 'What is CORS, what problem does it solve, and how do you configure it correctly?',
+  },
+  {
+    id: 'web-auth',
+    category: 'web',
+    text: 'Explain the difference between authentication and authorization, and the trade-offs of JWTs versus server sessions.',
+  },
+  {
+    id: 'web-rest-design',
+    category: 'web',
+    text: 'How would you design a REST API for a resource with pagination, filtering, and versioning?',
+  },
+  {
+    id: 'data-indexes',
+    category: 'web',
+    text: 'How do database indexes work, and how would you find and fix an N plus one query problem?',
+  },
+  {
+    id: 'data-transactions',
+    category: 'web',
+    text: 'What are transaction isolation levels, and which problems does each one prevent?',
+  },
+  // system design
+  {
+    id: 'sd-scaling',
+    category: 'system-design',
+    text: 'An API endpoint is getting slow under load. Walk me through how you would diagnose and scale it.',
+  },
+  {
+    id: 'sd-caching',
+    category: 'system-design',
+    text: 'Where would you add caching in a typical web application, and how do you handle invalidation?',
+  },
+  {
+    id: 'sd-queues',
+    category: 'system-design',
+    text: 'When would you introduce a message queue, and what new failure modes does it bring?',
+  },
+  {
+    id: 'sd-rate-limiter',
+    category: 'system-design',
+    text: 'Design a rate limiter for a public API.',
+  },
+  {
+    id: 'sd-url-shortener',
+    category: 'system-design',
+    text: 'Design a URL shortener. What are the key components and trade-offs?',
+  },
+  {
+    id: 'sd-monolith-microservices',
+    category: 'system-design',
+    text: 'When would you split a monolith into services, and when would you not?',
   },
 ];
 

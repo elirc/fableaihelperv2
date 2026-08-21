@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CLOUD_MODELS, PROVIDERS } from '../../../shared/catalog';
+import { CLOUD_MODELS, PROVIDERS, STT_TECHNICAL_GLOSSARY } from '../../../shared/catalog';
 import { TIMEOUTS } from '../../../shared/constants';
 import type { ModelSummary, ProviderProbe, TranscriptResult } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
@@ -55,6 +55,8 @@ export class GroqWhisperProvider implements SttProvider {
     const form = new FormData();
     form.set('model', input.modelId);
     form.set('response_format', 'verbose_json');
+    // Decoding bias toward technical vocabulary; see STT_TECHNICAL_GLOSSARY.
+    form.set('prompt', STT_TECHNICAL_GLOSSARY);
     if (input.language && input.language !== 'auto') form.set('language', input.language);
     form.set(
       'file',

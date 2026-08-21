@@ -437,6 +437,14 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             <button
               className="small"
               disabled={!state.transcript || busy}
+              onClick={() => void regenerate({ answerMode: 'technical' })}
+              data-testid="technical-button"
+            >
+              Technical
+            </button>
+            <button
+              className="small"
+              disabled={!state.transcript || busy}
               onClick={() => void regenerate({ answerMode: 'concise' })}
             >
               More concise
@@ -480,23 +488,23 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
           <section className="card">
             <h2>Default mode</h2>
             <div className="mode-row" role="group" aria-label="answer mode">
-              {(['natural', 'concise', 'bullets', 'star', 'clarify'] as AnswerMode[]).map(
-                (mode) => (
-                  <button
-                    key={mode}
-                    className="small"
-                    aria-pressed={settings.answerMode === mode}
-                    style={
-                      settings.answerMode === mode
-                        ? { borderColor: 'var(--accent)', color: 'var(--accent)' }
-                        : undefined
-                    }
-                    onClick={() => void setMode(mode)}
-                  >
-                    {mode === 'star' ? 'STAR' : mode[0].toUpperCase() + mode.slice(1)}
-                  </button>
-                ),
-              )}
+              {(
+                ['natural', 'technical', 'concise', 'bullets', 'star', 'clarify'] as AnswerMode[]
+              ).map((mode) => (
+                <button
+                  key={mode}
+                  className="small"
+                  aria-pressed={settings.answerMode === mode}
+                  style={
+                    settings.answerMode === mode
+                      ? { borderColor: 'var(--accent)', color: 'var(--accent)' }
+                      : undefined
+                  }
+                  onClick={() => void setMode(mode)}
+                >
+                  {mode === 'star' ? 'STAR' : mode[0].toUpperCase() + mode.slice(1)}
+                </button>
+              ))}
             </div>
           </section>
         )}

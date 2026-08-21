@@ -45,6 +45,16 @@ export class LocalWhisperProvider implements SttProvider {
     return out;
   }
 
+  /**
+   * Load the model into the worker while the clip is still recording. Only
+   * an already-downloaded model is loaded: a warmup must never kick off a
+   * multi-hundred-megabyte download the user did not ask for.
+   */
+  async warmup(modelId: string, signal: AbortSignal): Promise<void> {
+    if (!(await this.workers.isInstalled(modelId))) return;
+    await this.workers.ensureModel(modelId, () => undefined, signal);
+  }
+
   async transcribe(input: TranscribeInput): Promise<TranscriptResult> {
     const { samples, sampleRate } = decodeWavToFloat32(input.audio);
     const audio =

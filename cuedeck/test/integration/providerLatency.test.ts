@@ -130,11 +130,12 @@ describe('CerebrasLlmProvider (descriptor-driven OpenAI-compatible)', () => {
     expect(s.requests[0].headers.authorization).toBe('Bearer test-key-123');
   });
 
-  it('lists its pinned free-tier model', async () => {
+  it('lists its pinned free-tier models, recommended 70B first', async () => {
     const provider = new CerebrasLlmProvider(key);
     const models = await provider.listModels(signal());
-    expect(models).toHaveLength(1);
-    expect(models[0].providerId).toBe('cerebras');
+    expect(models).toHaveLength(2);
+    expect(models[0].id).toBe('llama-3.3-70b');
+    expect(models.every((m) => m.providerId === 'cerebras')).toBe(true);
   });
 
   it('warmup opens an authenticated connection to /models', async () => {

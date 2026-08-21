@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { TIMEOUTS } from '../../../shared/constants';
+import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, TIMEOUTS } from '../../../shared/constants';
 import type {
   AnswerDelta,
   ModelSummary,
@@ -64,6 +64,10 @@ export async function* streamChatCompletions(options: {
       body: JSON.stringify({
         model: request.modelId,
         stream: true,
+        // Without these the provider default applies (temperature 1.0 on
+        // most OpenAI-compatible hosts) — far too loose for technical answers.
+        temperature: request.temperature ?? DEFAULT_TEMPERATURE,
+        max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
         messages: [
           { role: 'system', content: request.system },
           { role: 'user', content: request.user },

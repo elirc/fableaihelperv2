@@ -130,15 +130,39 @@ export const LOCAL_STT_MODELS: CatalogModel[] = [
 /** Cloud model IDs, isolated per spec §12. */
 export const CLOUD_MODELS = {
   groqSttModel: 'whisper-large-v3-turbo',
-  groqLlmModel: 'llama-3.1-8b-instant',
+  /** 70B is the default: 8B-class models fabricate framework specifics on
+   *  technical questions, and Groq's speed keeps 70B well under a second
+   *  to first token. The 8B stays available as the fastest fallback. */
+  groqLlmModel: 'llama-3.3-70b-versatile',
+  groqLlmFastModel: 'llama-3.1-8b-instant',
   geminiModel: 'gemini-2.5-flash',
-  cerebrasModel: 'llama3.1-8b',
+  cerebrasModel: 'llama-3.3-70b',
+  cerebrasFastModel: 'llama3.1-8b',
   openRouterDefaultModel: 'openrouter/free',
 } as const;
 
-/** Small instruct models suggested in the UI when Ollama has none installed. */
+/**
+ * Instruct models suggested in the UI when Ollama has none installed. The
+ * 7-8B coder/general models are markedly better on technical interview
+ * questions and need ~16 GB RAM; the 3B models fit smaller machines.
+ */
 export const RECOMMENDED_OLLAMA_MODELS = [
+  'qwen2.5-coder:7b-instruct',
+  'qwen3:8b',
   'qwen2.5:3b-instruct',
   'llama3.2:3b',
-  'phi3.5:3.8b',
 ] as const;
+
+/**
+ * Vocabulary hint handed to cloud speech-to-text as a decoding bias. Whisper
+ * conditions on this text, so domain terms it would otherwise mis-hear
+ * ("I innumerable", "link") resolve to the intended spelling. Kept well
+ * under Whisper's ~224-token prompt window.
+ */
+export const STT_TECHNICAL_GLOSSARY =
+  'Software engineering interview. Terms: JavaScript, TypeScript, React, Node.js, Next.js, ' +
+  'npm, async/await, Promise, closure, event loop, useEffect, useState, Redux, C#, .NET, ' +
+  'ASP.NET Core, LINQ, IEnumerable, IQueryable, Entity Framework Core, Task, ValueTask, ' +
+  'dependency injection, middleware, NuGet, Blazor, SQL Server, PostgreSQL, Redis, REST API, ' +
+  'GraphQL, gRPC, JWT, OAuth, CORS, idempotent, microservices, Kubernetes, Docker, Azure, AWS, ' +
+  'CI/CD, unit tests, Big O notation.';

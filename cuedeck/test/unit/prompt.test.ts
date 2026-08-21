@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { SPOKEN_WORDS_PER_SECOND } from '../../src/shared/constants';
-import { buildPrompt, buildUserPrompt, escapeBlock } from '../../src/shared/prompt';
+import {
+  answerTemperature,
+  answerTokenBudget,
+  buildPrompt,
+  buildUserPrompt,
+  escapeBlock,
+} from '../../src/shared/prompt';
 
 const profile = {
   summary: 'Backend engineer, 6 years, Node and Postgres.',
@@ -175,6 +181,32 @@ describe('buildPrompt system instructions', () => {
     },
   );
 
+  it('separates experience grounding from knowledge answering', () => {
+    const { system } = buildPrompt({
+      profile,
+      transcript: 'What is the difference between IEnumerable and IQueryable?',
+      answerMode: 'technical',
+      targetSeconds: 60,
+    });
+    // Anti-invention stays scoped to the user's own history…
+    expect(system).toContain('Never invent experience');
+    // …while knowledge questions are answered from general knowledge.
+    expect(system).toContain('general knowledge');
+    // And speech-recognition slips are repaired, not answered literally.
+    expect(system).toContain('speech recognition');
+  });
+
+  it('gives technical mode an answer-first structure', () => {
+    const { system } = buildPrompt({
+      profile,
+      transcript: 'q',
+      answerMode: 'technical',
+      targetSeconds: 60,
+    });
+    expect(system).toContain('direct answer in the first sentence');
+    expect(system).toContain('trade-off');
+  });
+
   it('varies the mode rule text', () => {
     const bullets = buildPrompt({
       profile,
@@ -186,5 +218,22 @@ describe('buildPrompt system instructions', () => {
     expect(bullets.system).not.toBe(star.system);
     expect(bullets.system).toContain('bullet');
     expect(star.system).toContain('Situation, Task, Action, Result');
+  });
+});
+
+describe('sampling helpers', () => {
+  it('scales the token budget with the target and clamps both ends', () => {
+    expect(answerTokenBudget(15)).toBe(400); // floor: short targets keep headroom
+    expect(answerTokenBudget(120)).toBeLessThanOrEqual(1200);
+    expect(answerTokenBudget(30)).toBeLessThan(answerTokenBudget(90));
+    // Budget always clears the word target with room for overshoot.
+    for (const target of [15, 30, 60, 90, 120] as const) {
+      expect(answerTokenBudget(target)).toBeGreaterThan(target * SPOKEN_WORDS_PER_SECOND);
+    }
+  });
+
+  it('runs factual modes cooler than conversational ones', () => {
+    expect(answerTemperature('technical')).toBeLessThan(answerTemperature('natural'));
+    expect(answerTemperature('concise')).toBeLessThan(answerTemperature('star'));
   });
 });

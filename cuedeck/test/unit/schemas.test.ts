@@ -50,6 +50,17 @@ describe('publicSettingsSchema', () => {
     ).toBe(false);
   });
 
+  it('bounds trailingSilenceMs to a sane pause window', () => {
+    const ok = (ms: unknown) =>
+      publicSettingsSchema.safeParse({ ...DEFAULT_SETTINGS, trailingSilenceMs: ms }).success;
+    expect(ok(1000)).toBe(true);
+    expect(ok(2400)).toBe(true);
+    expect(ok(100)).toBe(false);
+    expect(ok(60_000)).toBe(false);
+    expect(ok(1000.5)).toBe(false);
+    expect(ok('1600')).toBe(false);
+  });
+
   it('requires autoStopOnSilence to be a boolean', () => {
     expect(
       publicSettingsSchema.safeParse({ ...DEFAULT_SETTINGS, autoStopOnSilence: 'yes' }).success,

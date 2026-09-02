@@ -44,6 +44,12 @@ describe('migrateSettings', () => {
     expect(migrated.fontScale).toBe(1);
   });
 
+  it('fills the pause-length field added after the file was written', () => {
+    const migrated = migrateSettings({ schemaVersion: 1, onboardingComplete: true });
+    expect(migrated.trailingSilenceMs).toBe(DEFAULT_SETTINGS.trailingSilenceMs);
+    expect(migrated.onboardingComplete).toBe(true);
+  });
+
   it('fills fields added after the file was written (autoStopOnSilence)', () => {
     // A settings.json from a build that predates the field must load with
     // the default instead of being discarded wholesale.

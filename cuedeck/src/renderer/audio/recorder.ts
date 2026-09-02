@@ -76,18 +76,36 @@ export class ClipRecorder {
     this.startedAt = performance.now();
   }
 
+  /**
+   * Encode everything captured so far without stopping. Used for the
+   * speculative transcription started at silence onset: the clip keeps
+   * recording, and if the speaker turns out to be done, the final clip is
+   * this snapshot plus trailing silence. Throws once the recorder has
+   * stopped.
+   */
+  snapshot(): EncodedClip {
+    if (this.stopped) throw new Error('recorder stopped');
+    return this.encode();
+  }
+
   /** Stop capture and encode the collected audio as 16 kHz mono WAV. */
   async stop(): Promise<EncodedClip> {
     const encodeStart = performance.now();
     await this.teardown();
-    const totalFrames = this.chunks.reduce((sum, c) => sum + c.length, 0);
-    const merged = new Float32Array(totalFrames);
-    let offset = 0;
-    for (const chunk of this.chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
-    }
+    const clip = this.encode();
     this.chunks = []; // release capture buffers (CAP-09)
+    return { ...clip, encodeMs: Math.round(performance.now() - encodeStart) };
+  }
+
+  /** Discard everything without producing a clip (CAP-05). */
+  async abort(): Promise<void> {
+    await this.teardown();
+    this.chunks = [];
+  }
+
+  private encode(): EncodedClip {
+    const encodeStart = performance.now();
+    const merged = this.merge();
     const resampled = resample(merged, this.sampleRate, TARGET_SAMPLE_RATE);
     const wav = encodeWav(resampled, TARGET_SAMPLE_RATE);
     const buffer = wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength) as ArrayBuffer;
@@ -98,10 +116,21 @@ export class ClipRecorder {
     };
   }
 
-  /** Discard everything without producing a clip (CAP-05). */
-  async abort(): Promise<void> {
-    await this.teardown();
-    this.chunks = [];
+  /**
+   * Concatenate the worklet's 128-frame chunks. The result replaces them so
+   * repeated snapshots do not re-copy thousands of tiny arrays each time.
+   */
+  private merge(): Float32Array {
+    if (this.chunks.length === 1) return this.chunks[0];
+    const totalFrames = this.chunks.reduce((sum, c) => sum + c.length, 0);
+    const merged = new Float32Array(totalFrames);
+    let offset = 0;
+    for (const chunk of this.chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    this.chunks = [merged];
+    return merged;
   }
 
   private async teardown(): Promise<void> {

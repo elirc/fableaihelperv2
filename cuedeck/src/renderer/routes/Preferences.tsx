@@ -93,6 +93,20 @@ function GeneralSection({ settings, onSettingsChanged }: Props): React.JSX.Eleme
         />
         <span>Compact coach layout (recording indicator always stays visible)</span>
       </label>
+      <label className="row" style={{ alignItems: 'flex-start' }}>
+        <input
+          type="checkbox"
+          style={{ width: 'auto', marginTop: 4 }}
+          checked={settings.conversationMemory}
+          onChange={(e) => void update({ conversationMemory: e.target.checked })}
+          data-testid="conversation-memory-toggle"
+        />
+        <span>
+          Remember the last two exchanges and send them with each request, so follow-up questions
+          are answered in context. Costs a few hundred extra tokens per response; “Clear” in the
+          coach window forgets them.
+        </span>
+      </label>
       <label className="field">
         <span>Text size ({Math.round(settings.fontScale * 100)}%)</span>
         <input
@@ -324,6 +338,78 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
             </select>
           </label>
         )}
+        <details open={settings.llmBackupProviderId !== ''}>
+          <summary>Backup response model (used only if the primary fails)</summary>
+          <p className="hint">
+            Free tiers rate-limit and occasionally go down mid-interview. If the primary model fails
+            before it produces anything (rate limit, outage, timeout, rejected key), the answer is
+            retried once on this backup and the status rail says so. Nothing is ever switched
+            silently; the backup must have its own key and disclosure accepted below.
+          </p>
+          <label className="field">
+            <span>Backup provider</span>
+            <select
+              value={settings.llmBackupProviderId}
+              onChange={(e) =>
+                void update({ llmBackupProviderId: e.target.value, llmBackupModelId: '' })
+              }
+              data-testid="backup-provider"
+            >
+              <option value="">None</option>
+              {llmProviders
+                .filter((p) => p.id !== settings.llmProviderId)
+                .map((p) => (
+                  <option
+                    key={p.id}
+                    value={p.id}
+                    disabled={
+                      p.location === 'cloud' &&
+                      !settings.credentials[p.credentialId ?? p.id]?.configured
+                    }
+                  >
+                    {p.displayName}
+                  </option>
+                ))}
+            </select>
+          </label>
+          {settings.llmBackupProviderId !== '' && (
+            <>
+              <div className="row">
+                <button
+                  className="small"
+                  onClick={() =>
+                    void probe(settings.llmBackupProviderId).then(() =>
+                      loadModels(settings.llmBackupProviderId),
+                    )
+                  }
+                >
+                  Check &amp; list models
+                </button>
+                {providerStatus(settings.llmBackupProviderId)}
+              </div>
+              {(models[settings.llmBackupProviderId] ?? []).length > 0 && (
+                <label className="field">
+                  <span>Backup model</span>
+                  <select
+                    value={settings.llmBackupModelId}
+                    onChange={(e) => void update({ llmBackupModelId: e.target.value })}
+                    data-testid="backup-model"
+                  >
+                    <option value="">Choose a model…</option>
+                    {(models[settings.llmBackupProviderId] ?? []).map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {settings.llmBackupModelId === '' && (
+                <p className="hint">Pick a backup model, or the backup stays inactive.</p>
+              )}
+            </>
+          )}
+        </details>
         {settings.llmProviderId === 'openrouter' && (
           <label className="row" style={{ alignItems: 'flex-start' }}>
             <input

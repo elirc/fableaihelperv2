@@ -24,6 +24,7 @@ npm run check            # format:check + lint + typecheck + unit + integration
 This is the most instructive change in the codebase because it touches every layer deliberately kept apart. Suppose you are adding a provider called "Acme". Walk these files in order:
 
 1. **`src/shared/catalog.ts`** — add an entry to `PROVIDERS`:
+
    ```ts
    acme: {
      id: 'acme',
@@ -36,13 +37,14 @@ This is the most instructive change in the codebase because it touches every lay
      disclosure: 'Transcripts, your profile, and session notes are sent to Acme. ...',
    },
    ```
+
    The `disclosure` string is not decorative: the Preferences UI shows it before the provider can be enabled, and it is part of the app's consent posture. Cloud model IDs go in `CLOUD_MODELS` here too — never hardcode a model ID inside an adapter (the file's header comment explains why: a provider-side rename should be a one-line release change).
 
 2. **`src/shared/constants.ts`** — add the API hostname to `ALLOWED_HOSTS`. If you skip this, `allowlistedFetch` (`src/main/security/http.ts`) will throw `PROVIDER_UNAVAILABLE: host not allowed` before a socket ever opens. This is by design — the allowlist is the audit trail of everywhere the app can talk to. If the Preferences UI should link to the provider's key console or privacy policy, also add those exact URLs to `EXTERNAL_LINK_ALLOWLIST` (matched by host + path prefix in `src/main/security/urlPolicy.ts`).
 
 3. **`src/main/providers/llm/acme.ts`** — the adapter, implementing `LlmProvider` from `src/main/providers/contracts.ts` (`meta`, `probe`, `listModels`, `generate`). Two paths:
-   - *OpenAI-compatible API* (the common case): copy `src/main/providers/llm/groq.ts`. It is ~45 lines because all the real work — SSE parsing, `Bearer` auth, HTTP-status-to-error-code mapping, the single Retry-After honor on 429 — lives in `src/main/providers/llm/openAiCompatible.ts` (`streamChatCompletions`, `probeOpenAiCompatible`, `mapHttpStatus`). Reuse it.
-   - *Custom wire format*: copy `src/main/providers/llm/gemini.ts` (SSE with a custom JSON shape) or `ollama.ts` (NDJSON). Use `SseParser`/`NdjsonParser` from `src/shared/streaming.ts` and `bodyChunks` from `contracts.ts`; both parsers survive arbitrary chunk boundaries and unterminated final frames, and there are already tests proving it.
+   - _OpenAI-compatible API_ (the common case): copy `src/main/providers/llm/groq.ts`. It is ~45 lines because all the real work — SSE parsing, `Bearer` auth, HTTP-status-to-error-code mapping, the single Retry-After honor on 429 — lives in `src/main/providers/llm/openAiCompatible.ts` (`streamChatCompletions`, `probeOpenAiCompatible`, `mapHttpStatus`). Reuse it.
+   - _Custom wire format_: copy `src/main/providers/llm/gemini.ts` (SSE with a custom JSON shape) or `ollama.ts` (NDJSON). Use `SseParser`/`NdjsonParser` from `src/shared/streaming.ts` and `bodyChunks` from `contracts.ts`; both parsers survive arbitrary chunk boundaries and unterminated final frames, and there are already tests proving it.
 
    Conventions the existing adapters all follow:
    - Constructor takes `(getApiKey: () => Promise<string | null>, baseUrl = DEFAULT)`. The injectable `baseUrl` is what lets integration tests point the adapter at a loopback fake server.
@@ -52,9 +54,11 @@ This is the most instructive change in the codebase because it touches every lay
    - Throw only `CoachError` with codes from `PUBLIC_ERROR_CODES` (`src/shared/domain.ts`). Users see the template message from `src/shared/errors.ts`, not your string — your string becomes `detail`.
 
 4. **`src/main/main.ts`** — register it in `bootstrap()`:
+
    ```ts
    registry.registerLlm(new AcmeProvider(keyFor('acme')));
    ```
+
    `keyFor('acme')` closes over `SecretVault.getForAdapter('acme')`, so the key the user saves under provider id `acme` reaches your adapter and nothing else. The provider id string must match the `PROVIDERS` key — the secret vault, the credential flags in settings, and the registry are all keyed by it.
 
 5. **`src/shared/redact.ts`** — if the provider's API keys have a recognizable prefix (like `gsk_` for Groq or `sk-or-` for OpenRouter), add a pattern so a leaked key can never appear in diagnostics exports.
@@ -70,18 +74,22 @@ There are five places a channel exists, and all five must agree. Using an imagin
 1. **Schema first** — `src/shared/schemas.ts`. Define a Zod schema for the request payload with explicit bounds (`z.string().min(1).max(...)`); look at `profileSaveSchema` or `sessionRegenerateSchema` for the house style. Every size limit here is a defence: the renderer is the least-trusted process, so nothing it sends is believed.
 
 2. **Handler** — `src/main/ipc/register.ts`. Always use `secureHandle`, never raw `ipcMain.handle`:
+
    ```ts
    secureHandle('notes:save', async (_event, raw) => {
      const input = noteSaveSchema.parse(raw);
      return services.notes.save(input);
    });
    ```
+
    `secureHandle` gives you, for free: trusted-sender + main-frame verification, and conversion of any thrown error (Zod errors included) into a structured `PublicError` — so never `throw new Error('...')` with internal details; throw `CoachError` with a public code. Return values must be plain JSON-serializable data (they cross a process boundary). If the operation is long-running, follow the `models:download` pattern instead: return an `operationId` immediately and stream progress via `broadcast('operation:event', ...)`.
 
 3. **Preload** — `src/preload/preload.ts`. Add a named method to the `api` object:
+
    ```ts
    saveNote: (note: NoteInput) => invoke<Note>('notes:save', note),
    ```
+
    Do not expose the channel name, `ipcRenderer`, or anything generic. The e2e suite literally asserts `window.cuedeck` has no `invoke`/`send` keys.
 
 4. **Types** — nothing extra to do: `CueDeckApi = typeof api` is exported from the preload and `src/renderer/global.d.ts` maps it onto `window.cuedeck`, so the renderer gets full type safety automatically. Put any new domain types in `src/shared/domain.ts` (kept as the static mirror of the Zod schemas).
@@ -97,7 +105,8 @@ Routing is a ~10-line hash router in `src/renderer/App.tsx` (`useHashRoute`), no
 1. Create `src/renderer/routes/MyScreen.tsx`. The existing routes all take `{ settings: PublicSettings; onSettingsChanged: () => Promise<void> }` and call `onSettingsChanged` after any `updatePublicSettings` so `App` re-fetches and re-renders everything with fresh settings.
 2. Add a branch in `App()`:
    ```tsx
-   if (route.startsWith('/myscreen')) return <MyScreen settings={settings} onSettingsChanged={refresh} />;
+   if (route.startsWith('/myscreen'))
+     return <MyScreen settings={settings} onSettingsChanged={refresh} />;
    ```
    Note the precedence in `App`: `/preferences` wins over everything, then the onboarding gate (`!settings.onboardingComplete`), then Coach as the default.
 3. If the screen should open in its own OS window (like Preferences), add a factory in `src/main/windows/windows.ts` — reuse `SECURE_PREFERENCES`, call `hardenWebContents(win)`, and load the same renderer bundle with your hash (`{ hash: '/myscreen' }` in the packaged branch, `#/myscreen` on the dev URL). Then expose an `app:openMyScreen`-style channel following the IPC recipe above.

@@ -49,6 +49,10 @@ export const publicSettingsSchema = z.object({
   fontScale: z.number().min(0.9).max(1.6),
   maxClipSeconds: z.number().int().min(30).max(120),
   autoStopOnSilence: z.boolean(),
+  trailingSilenceMs: z.number().int().min(500).max(5_000),
+  conversationMemory: z.boolean(),
+  llmBackupProviderId: z.string().max(64),
+  llmBackupModelId: z.string().max(200),
   activeProfileId: z.string().optional(),
   ollamaBaseUrl: z.string().url(),
   allowPaidModels: z.boolean(),
@@ -114,6 +118,8 @@ export const modelsListSchema = z.object({ providerId: z.string().min(1).max(64)
 
 export const modelsDownloadSchema = z.object({ modelId: z.string().min(1).max(200) });
 
+export const modelsCancelDownloadSchema = z.object({ operationId: z.string().min(1).max(64) });
+
 export const captureArmSchema = z.object({ sessionId: sessionIdSchema });
 
 /** Bounds for a submitted WAV clip. 16 kHz mono 16-bit for up to 120 s plus
@@ -127,10 +133,21 @@ export const sessionSubmitMetaSchema = z.object({
   encodeMs: z.number().min(0).max(600_000),
 });
 
+/** Speculative transcription of the clip-so-far, fired at silence onset. */
+export const sessionSpeculateMetaSchema = z.object({
+  sessionId: sessionIdSchema,
+  language: z.string().max(16).optional(),
+});
+
 export const sessionRegenerateSchema = z.object({
   sessionId: sessionIdSchema,
   transcript: z.string().min(1).max(40_000),
   options: sessionOptionsSchema,
+});
+
+export const sessionFollowUpSchema = z.object({
+  sessionId: sessionIdSchema,
+  options: z.object({ sessionNotes: z.string().max(4_000).optional() }).default({}),
 });
 
 export const sessionCancelSchema = z.object({ sessionId: sessionIdSchema });

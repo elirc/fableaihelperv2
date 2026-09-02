@@ -18,6 +18,8 @@ export interface CoachState {
   elapsedMs: number;
   level: { rms: number; peak: number };
   silentSoFar: boolean;
+  /** Exchanges the main process remembers as context for the next request. */
+  conversationDepth: number;
 }
 
 export const initialCoachState: CoachState = {
@@ -31,6 +33,7 @@ export const initialCoachState: CoachState = {
   elapsedMs: 0,
   level: { rms: 0, peak: 0 },
   silentSoFar: true,
+  conversationDepth: 0,
 };
 
 export type CoachAction =
@@ -44,6 +47,8 @@ export type CoachAction =
   | { type: 'cancel-confirmed'; sessionId: string }
   | { type: 'submitted'; sessionId: string }
   | { type: 'regenerate'; sessionId: string; transcript: string }
+  | { type: 'follow-up-requested'; sessionId: string }
+  | { type: 'conversation-cleared' }
   | { type: 'edit-transcript'; text: string }
   | { type: 'session-event'; event: SessionEvent }
   | { type: 'reset' };
@@ -71,6 +76,7 @@ export function coachReducer(state: CoachState, action: CoachAction): CoachState
         ...initialCoachState,
         phase: 'arming_capture',
         sessionId: action.sessionId,
+        conversationDepth: state.conversationDepth,
       };
 
     case 'capture-started':
@@ -121,18 +127,31 @@ export function coachReducer(state: CoachState, action: CoachAction): CoachState
         error: null,
       };
 
+    case 'follow-up-requested':
+      // The interviewer's question is generated in main and arrives as a
+      // 'follow-up' event; the previous answer stays visible meanwhile.
+      return {
+        ...state,
+        sessionId: action.sessionId,
+        phase: 'generating',
+        metrics: null,
+        error: null,
+        lastSequence: -1,
+      };
+
+    case 'conversation-cleared':
+      return { ...state, conversationDepth: 0 };
+
     case 'edit-transcript':
-      if (isActivePhase(state.phase) && state.phase !== 'recording') {
-        // Editing is only allowed once the pipeline is done with the clip.
-        if (state.phase === 'transcribing' || state.phase === 'generating') return state;
-      }
+      // Editing is only allowed once the pipeline is done with the clip.
+      if (state.phase === 'transcribing' || state.phase === 'generating') return state;
       return { ...state, transcript: action.text };
 
     case 'session-event':
       return applySessionEvent(state, action.event);
 
     case 'reset':
-      return { ...initialCoachState, phase: 'ready' };
+      return { ...initialCoachState, phase: 'ready', conversationDepth: state.conversationDepth };
 
     default:
       return state;
@@ -149,6 +168,20 @@ function applySessionEvent(state: CoachState, event: SessionEvent): CoachState {
     }
     case 'transcript':
       return { ...state, transcript: event.text, transcriptLanguage: event.language };
+    case 'follow-up':
+      if (state.phase === 'cancelling') return state;
+      return {
+        ...state,
+        phase: 'ready',
+        transcript: event.text,
+        transcriptLanguage: undefined,
+        answer: '',
+        metrics: null,
+        error: null,
+        lastSequence: -1,
+      };
+    case 'conversation':
+      return { ...state, conversationDepth: event.exchanges };
     case 'answer-delta': {
       if (event.sequence <= state.lastSequence) return state; // out-of-order or duplicate
       if (state.phase !== 'generating' && state.phase !== 'transcribing') return state;

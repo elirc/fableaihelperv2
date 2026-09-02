@@ -60,6 +60,50 @@ describe('Ollama latency behavior', () => {
     expect(sent.messages).toEqual([]);
     expect(sent.keep_alive).toBe(OLLAMA_KEEP_ALIVE);
   });
+
+  it('warmup with a prefix fills the prompt cache with one predicted token', async () => {
+    const s = await server((req, res) => {
+      if (req.url === '/api/chat') {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ message: { content: 'I' }, done: true }));
+      } else res.writeHead(404).end();
+    });
+    const provider = new OllamaProvider(async () => s.baseUrl);
+    await provider.warmup('qwen2.5:3b', signal(), { system: 'SYS', user: '<profile_data>x' });
+    const sent = JSON.parse(s.requests[0].body.toString()) as {
+      messages: Array<{ role: string; content: string }>;
+      options: { num_predict: number; num_ctx: number };
+      stream: boolean;
+      keep_alive: string;
+    };
+    expect(sent.messages).toEqual([
+      { role: 'system', content: 'SYS' },
+      { role: 'user', content: '<profile_data>x' },
+    ]);
+    expect(sent.options.num_predict).toBe(1);
+    expect(sent.stream).toBe(false);
+    expect(sent.keep_alive).toBe(OLLAMA_KEEP_ALIVE);
+  });
+
+  it('warmup and generate request the same num_ctx so Ollama does not reload the model', async () => {
+    const body = `${JSON.stringify({ message: { content: 'hi' }, done: true })}\n`;
+    const s = await server((req, res) => {
+      if (req.url === '/api/chat') {
+        res.setHeader('content-type', 'application/x-ndjson');
+        void writeChunked(res, body);
+      } else res.writeHead(404).end();
+    });
+    const provider = new OllamaProvider(async () => s.baseUrl);
+    await provider.warmup('qwen2.5:3b', signal());
+    await provider.warmup('qwen2.5:3b', signal(), { system: 'SYS', user: '' });
+    await collect(provider.generate(request({ modelId: 'qwen2.5:3b' })));
+    const ctxs = s.requests.map(
+      (r) => (JSON.parse(r.body.toString()) as { options: { num_ctx?: number } }).options.num_ctx,
+    );
+    expect(ctxs).toHaveLength(3);
+    expect(new Set(ctxs).size).toBe(1);
+    expect(ctxs[0]).toBeGreaterThan(0);
+  });
 });
 
 describe('Gemini thinking budget', () => {

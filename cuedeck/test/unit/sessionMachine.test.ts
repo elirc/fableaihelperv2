@@ -223,3 +223,72 @@ describe('coachReducer', () => {
     expect(state.answer).toBe('');
   });
 });
+
+describe('conversation context and interviewer follow-ups', () => {
+  const SID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const SID2 = '11111111-2222-3333-4444-555555555555';
+
+  it('tracks the remembered depth from conversation events', () => {
+    const state = run([
+      { type: 'regenerate', sessionId: SID, transcript: 'Q?' },
+      { type: 'session-event', event: { type: 'conversation', sessionId: SID, exchanges: 2 } },
+    ]);
+    expect(state.conversationDepth).toBe(2);
+  });
+
+  it('keeps the depth across reset and a new recording, and clears it explicitly', () => {
+    const withDepth = run([
+      { type: 'regenerate', sessionId: SID, transcript: 'Q?' },
+      { type: 'session-event', event: { type: 'conversation', sessionId: SID, exchanges: 1 } },
+    ]);
+    expect(run([{ type: 'reset' }], withDepth).conversationDepth).toBe(1);
+    expect(run([{ type: 'arm', sessionId: SID2 }], withDepth).conversationDepth).toBe(1);
+    expect(run([{ type: 'conversation-cleared' }], withDepth).conversationDepth).toBe(0);
+  });
+
+  it('a follow-up request generates under a new session id and keeps the last answer visible', () => {
+    const before = {
+      ...initialCoachState,
+      phase: 'complete' as const,
+      sessionId: SID,
+      transcript: 'Q?',
+      answer: 'A.',
+    };
+    const state = run([{ type: 'follow-up-requested', sessionId: SID2 }], before);
+    expect(state.phase).toBe('generating');
+    expect(state.sessionId).toBe(SID2);
+    expect(state.answer).toBe('A.');
+  });
+
+  it('a follow-up event replaces the transcript, clears the answer, and returns to ready', () => {
+    const before = {
+      ...initialCoachState,
+      phase: 'generating' as const,
+      sessionId: SID2,
+      transcript: 'Q?',
+      answer: 'A.',
+    };
+    const state = run(
+      [{ type: 'session-event', event: { type: 'follow-up', sessionId: SID2, text: 'And then?' } }],
+      before,
+    );
+    expect(state.phase).toBe('ready');
+    expect(state.transcript).toBe('And then?');
+    expect(state.answer).toBe('');
+    expect(state.metrics).toBeNull();
+  });
+
+  it('ignores a follow-up event from a retired session', () => {
+    const before = {
+      ...initialCoachState,
+      phase: 'ready' as const,
+      sessionId: SID2,
+      transcript: 'keep',
+    };
+    const state = run(
+      [{ type: 'session-event', event: { type: 'follow-up', sessionId: SID, text: 'stale' } }],
+      before,
+    );
+    expect(state.transcript).toBe('keep');
+  });
+});

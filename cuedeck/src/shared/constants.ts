@@ -12,6 +12,26 @@ export const MIN_CLIP_SECONDS = 0.5;
 /** RMS below this for the whole clip counts as silence. */
 export const SILENCE_RMS_THRESHOLD = 0.0015;
 
+/**
+ * Trailing-silence presets for auto-respond, offered in the coach window.
+ * Shorter waits shave latency off every exchange but fire on longer
+ * mid-sentence pauses; the endpointer's speculative pass (see
+ * `endpointing.ts`) makes the wait mostly overlap real work either way.
+ */
+export const PAUSE_PRESETS = [
+  { ms: 1_000, label: 'Quick pause (1.0 s)' },
+  { ms: 1_600, label: 'Normal pause (1.6 s)' },
+  { ms: 2_400, label: 'Patient pause (2.4 s)' },
+] as const;
+
+/**
+ * Idle time after which the local STT utility process is killed to give
+ * its model memory back. Symmetric with OLLAMA_KEEP_ALIVE: a pause this long
+ * means the practice session is over, and the capture-arm warmup reloads
+ * the model during the next recording anyway.
+ */
+export const STT_WORKER_IDLE_MS = 15 * 60_000;
+
 /** Stage timeouts (ms). */
 export const TIMEOUTS = {
   probe: 15_000,
@@ -43,6 +63,21 @@ export const CAPTURE_GRANT_TTL_MS = 8_000;
 
 /** Model-independent cap applied to generated answers (characters). */
 export const ANSWER_CHAR_CAP = 4_000;
+
+/**
+ * How many earlier question/answer pairs travel with each request so
+ * follow-ups ("and how would you scale that?") are answered in context.
+ * Two pairs is enough for a realistic interview thread and costs a few
+ * hundred tokens; each pair is capped again at prompt-assembly time.
+ */
+export const CONVERSATION_EXCHANGES = 2;
+
+/**
+ * First-token patience when a backup response model is configured. A
+ * healthy cloud model answers in well under this; waiting the full
+ * `TIMEOUTS.llmFirstToken` before switching would defeat the backup.
+ */
+export const BACKUP_FIRST_TOKEN_TIMEOUT_MS = 20_000;
 
 /**
  * Average spoken pace assumed everywhere a word count is converted to
@@ -101,6 +136,10 @@ export const DEFAULT_SETTINGS: PublicSettings = {
   fontScale: 1,
   maxClipSeconds: DEFAULT_MAX_CLIP_SECONDS,
   autoStopOnSilence: true,
+  trailingSilenceMs: 1_600,
+  conversationMemory: true,
+  llmBackupProviderId: '',
+  llmBackupModelId: '',
   ollamaBaseUrl: OLLAMA_DEFAULT_BASE_URL,
   allowPaidModels: false,
   onboardingComplete: false,

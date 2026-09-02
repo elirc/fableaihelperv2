@@ -242,9 +242,46 @@ test.describe('coach workflow', () => {
       await page.getByTestId('transcript-input').fill('Why do you want this job?');
       await page.getByTestId('regenerate-button').click();
       await expect(page.getByTestId('answer-text')).toContainText('Noted.', { timeout: 15_000 });
-      const body = ollama.chatBodies()[0];
+      // Warmup requests (app start, submit) also hit /api/chat with the
+      // system prompt + profile prefix; the generation is the one carrying
+      // the transcript text itself (the system prompt only names the block).
+      const body = ollama.chatBodies().find((b) => b.includes('Why do you want this job?'));
+      expect(body).toBeDefined();
       expect(body).toContain('<session_notes>');
       expect(body).toContain('Screening call with Acme for QA lead.');
+    } finally {
+      await app.close();
+      await ollama.close();
+    }
+  });
+
+  test('interviewer follow-up asks the next question from the remembered exchange', async () => {
+    const ollama = await startFakeOllama({ deltas: ['Noted.'] });
+    const { app } = await launchApp({
+      seedSettings: { ...READY_SETTINGS, ollamaBaseUrl: ollama.baseUrl },
+    });
+    try {
+      const page = await app.firstWindow();
+      await expect(page.getByTestId('follow-up-button')).toBeDisabled();
+      await page.getByTestId('transcript-input').fill('Tell me about a hard bug.');
+      await page.getByTestId('regenerate-button').click();
+      await expect(page.getByTestId('answer-text')).toContainText('Noted.', { timeout: 15_000 });
+      await expect(page.getByTestId('conversation-depth')).toContainText('1 exchange');
+      await page.getByTestId('follow-up-button').click();
+      // The fake server answers every request with "Noted."; for the
+      // interviewer request that text becomes the next question.
+      await expect(page.getByTestId('transcript-input')).toHaveValue('Noted.', {
+        timeout: 15_000,
+      });
+      await expect(page.getByTestId('answer-text')).not.toContainText('Noted.');
+      await expect(page.getByTestId('phase-chip')).toContainText('Ready');
+      const interviewer = ollama.chatBodies().find((b) => b.includes('You are the interviewer'));
+      expect(interviewer).toBeDefined();
+      expect(interviewer).toContain('Tell me about a hard bug.');
+      // Clear forgets the conversation.
+      await page.getByTestId('clear-button').click();
+      await expect(page.getByTestId('conversation-depth')).toHaveCount(0);
+      await expect(page.getByTestId('follow-up-button')).toBeDisabled();
     } finally {
       await app.close();
       await ollama.close();

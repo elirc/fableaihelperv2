@@ -1,6 +1,7 @@
 import { utilityProcess, type UtilityProcess } from 'electron';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { STT_WORKER_IDLE_MS } from '../../shared/constants';
 import type { TranscriptResult, TranscriptSegment } from '../../shared/domain';
 import { CoachError } from '../../shared/errors';
 import { readJsonFile, writeJsonFile } from '../storage/jsonFile';
@@ -33,11 +34,30 @@ export class SttWorkerManager {
   private nextRequestId = 1;
   private status: 'idle' | 'loading' | 'ready' = 'idle';
   private inflight: { modelId: string; promise: Promise<void> } | null = null;
+  /** Transcriptions run strictly one after another (see `transcribe`). */
+  private queue: Promise<unknown> = Promise.resolve();
+  private idleTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly workerPath: string,
     private readonly modelsDir: string,
+    private readonly idleMs: number = STT_WORKER_IDLE_MS,
   ) {}
+
+  /**
+   * (Re)start the idle clock. A resident Whisper model costs a few hundred
+   * megabytes; after a long pause it is released, and the capture-arm
+   * warmup brings it back during the next recording.
+   */
+  private touch(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.idleMs <= 0) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.status === 'ready') this.stop();
+    }, this.idleMs);
+    this.idleTimer.unref?.();
+  }
 
   get manifestPath(): string {
     return path.join(this.modelsDir, 'manifest.json');
@@ -92,6 +112,10 @@ export class SttWorkerManager {
 
   /** Kill the worker (freeing model memory); the next request respawns it. */
   stop(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     if (this.worker) {
       this.worker.kill();
       this.worker = null;
@@ -197,6 +221,7 @@ export class SttWorkerManager {
     }
     this.loadedModelId = modelId;
     this.status = 'ready';
+    this.touch();
     if (!wasInstalled) await this.recordInstall(modelId);
   }
 
@@ -228,16 +253,36 @@ export class SttWorkerManager {
 
   /**
    * Transcribe Float32 PCM in the worker (loading the model first if
-   * needed). Abort kills the worker process — the only way to interrupt an
-   * in-flight inference — and the next request respawns it.
+   * needed). Requests are serialized: a speculative pass and the real
+   * submit can arrive back to back, and running two inferences at once on
+   * one CPU only makes both slower. Abort kills the worker process — the
+   * only way to interrupt an in-flight inference — and the next request
+   * respawns it; a request that is aborted while still queued never
+   * reaches the worker at all.
    */
-  async transcribe(input: {
+  transcribe(input: {
     audio: Float32Array;
     modelId: string;
     language?: string;
     signal: AbortSignal;
     onProgress: (p: ModelProgress) => void;
   }): Promise<TranscriptResult> {
+    const run = this.queue.then(
+      () => this.transcribeNow(input),
+      () => this.transcribeNow(input),
+    );
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async transcribeNow(input: {
+    audio: Float32Array;
+    modelId: string;
+    language?: string;
+    signal: AbortSignal;
+    onProgress: (p: ModelProgress) => void;
+  }): Promise<TranscriptResult> {
+    if (input.signal.aborted) throw new DOMException('aborted', 'AbortError');
     await this.ensureModel(input.modelId, input.onProgress, input.signal);
     const worker = this.worker;
     if (!worker) throw new CoachError('MODEL_NOT_INSTALLED', 'model worker unavailable');
@@ -253,6 +298,7 @@ export class SttWorkerManager {
         const msg = ((event as { data?: unknown }).data ?? event) as Record<string, unknown>;
         if (msg.type === 'transcript' && msg.id === id) {
           cleanup();
+          this.touch();
           resolve({
             text: String(msg.text ?? ''),
             segments: (msg.segments as TranscriptSegment[] | undefined) ?? undefined,

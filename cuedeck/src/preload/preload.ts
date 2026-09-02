@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AppCapabilities,
   DiagnosticsReport,
+  FollowUpOptions,
   HistoryItem,
   ModelSummary,
   OperationEvent,
@@ -71,10 +72,18 @@ const api = {
   armCapture: (sessionId: string) => invoke<{ expiresAt: number }>('capture:arm', { sessionId }),
   submitSession: (sessionId: string, wav: ArrayBuffer, options: SessionOptions, encodeMs: number) =>
     invoke<{ accepted: boolean }>('session:submit', { sessionId, options, encodeMs }, wav),
+  /** Start transcribing the clip-so-far during a pause; see coordinator.speculate. */
+  speculateSession: (sessionId: string, wav: ArrayBuffer, language?: string) =>
+    invoke<{ accepted: boolean }>('session:speculate', { sessionId, language }, wav),
   regenerate: (sessionId: string, transcript: string, options: SessionOptions) =>
     invoke<{ accepted: boolean }>('session:regenerate', { sessionId, transcript, options }),
   cancelSession: (sessionId: string) =>
     invoke<{ cancelled: boolean }>('session:cancel', { sessionId }),
+  /** Generate the interviewer's next question from the conversation so far. */
+  followUp: (sessionId: string, options: FollowUpOptions) =>
+    invoke<{ accepted: boolean }>('session:followUp', { sessionId, options }),
+  /** Forget the remembered exchanges (a new conversation). */
+  clearConversation: () => invoke<{ cleared: boolean }>('session:clearConversation'),
 
   listHistory: (limit?: number) => invoke<HistoryItem[]>('history:list', { limit: limit ?? 100 }),
   deleteHistoryItem: (id: string) => invoke<{ deleted: boolean }>('history:delete', { id }),

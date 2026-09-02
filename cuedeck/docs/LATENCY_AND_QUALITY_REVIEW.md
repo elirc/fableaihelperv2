@@ -13,13 +13,13 @@ This complements the earlier general review in `gpt/APP_REVIEW.md`; findings the
 
 ## TL;DR — the five changes that matter most
 
-| # | Change | Why | Effort |
-|---|--------|-----|--------|
-| 1 | **Teach the prompt to answer technical questions** — today the system prompt actively suppresses them | Quality: the app is currently a *behavioral* coach; technical questions get hedged or refused | Small (prompt text only) |
-| 2 | **Pre-warm the local Whisper model** (it is never warmed today; only the LLM is) | Latency: the first Listen of every app run pays the full ONNX model load inside "transcribing…" | Small |
-| 3 | **Upgrade default models for technical Q&A** — 8B/3B models hallucinate .NET/JS specifics; Groq & Cerebras free tiers both offer Llama 3.3 70B | Quality: single biggest accuracy lever, one-line catalog change | Trivial |
-| 4 | **Transcribe incrementally while recording** instead of batch-after-stop | Latency: turns transcription from O(clip length) on the critical path into O(final 2 s) | Large |
-| 5 | **Set sampling params consistently on all providers** (Groq/Cerebras/OpenRouter currently send *no* temperature or max_tokens) and set `num_ctx` for Ollama | Quality: default temp 1.0 on the exact providers recommended for technical answers; silent context overflow on Ollama | Small |
+| #   | Change                                                                                                                                                      | Why                                                                                                                   | Effort                   |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| 1   | **Teach the prompt to answer technical questions** — today the system prompt actively suppresses them                                                       | Quality: the app is currently a _behavioral_ coach; technical questions get hedged or refused                         | Small (prompt text only) |
+| 2   | **Pre-warm the local Whisper model** (it is never warmed today; only the LLM is)                                                                            | Latency: the first Listen of every app run pays the full ONNX model load inside "transcribing…"                       | Small                    |
+| 3   | **Upgrade default models for technical Q&A** — 8B/3B models hallucinate .NET/JS specifics; Groq & Cerebras free tiers both offer Llama 3.3 70B              | Quality: single biggest accuracy lever, one-line catalog change                                                       | Trivial                  |
+| 4   | **Transcribe incrementally while recording** instead of batch-after-stop                                                                                    | Latency: turns transcription from O(clip length) on the critical path into O(final 2 s)                               | Large                    |
+| 5   | **Set sampling params consistently on all providers** (Groq/Cerebras/OpenRouter currently send _no_ temperature or max_tokens) and set `num_ctx` for Ollama | Quality: default temp 1.0 on the exact providers recommended for technical answers; silent context overflow on Ollama | Small                    |
 
 ---
 
@@ -48,8 +48,10 @@ passes:
   in the adapter, billed to the user's own OpenRouter key (set a spend cap at openrouter.ai/keys).
   Groq/Gemini paid tiers work with no app change (same endpoint, upgraded key).
 
-Still open: L2 (speculative / incremental transcription), L3–L5 (endpointer tuning, real-prompt
-LLM warmup, FLAC upload), Q7 (previous-exchange context).
+Update 2026-09-01 (see `docs/REVIEW_2026-09-01.md`): L2.1 (speculative transcription at silence
+onset), L3 (user-selectable pause length), L4 (real-prompt LLM warmup with prompt-cache prefix),
+and the L5 duplicate-decode item are implemented. Still open: L2.2 (incremental transcription
+with a live preview), FLAC upload, adaptive noise floor, Q7 (previous-exchange context).
 
 ---
 
@@ -61,13 +63,13 @@ The pipeline is: endpointer waits for trailing silence → renderer merges/resam
 IPC → validate → **STT over the whole clip** → prompt build → LLM stream. Approximate budget for a
 15-second question, steady state:
 
-| Stage | Local mode (Whisper Base + Ollama 3B, CPU) | Cloud mode (Groq Whisper turbo + Cerebras/Groq LLM) |
-|---|---|---|
-| Trailing-silence wait | 1.6 s (fixed) | 1.6 s (fixed) |
-| Encode (merge + resample + WAV) | ~10–50 ms | ~10–50 ms |
-| Transcribe | **~2–8 s** (scales with clip length) | ~0.5–1.5 s (upload + inference) |
-| LLM first token | ~0.3–1.5 s warm | ~0.2–0.6 s |
-| **First words on screen** | **~4–11 s** | **~2.5–4 s** |
+| Stage                           | Local mode (Whisper Base + Ollama 3B, CPU) | Cloud mode (Groq Whisper turbo + Cerebras/Groq LLM) |
+| ------------------------------- | ------------------------------------------ | --------------------------------------------------- |
+| Trailing-silence wait           | 1.6 s (fixed)                              | 1.6 s (fixed)                                       |
+| Encode (merge + resample + WAV) | ~10–50 ms                                  | ~10–50 ms                                           |
+| Transcribe                      | **~2–8 s** (scales with clip length)       | ~0.5–1.5 s (upload + inference)                     |
+| LLM first token                 | ~0.3–1.5 s warm                            | ~0.2–0.6 s                                          |
+| **First words on screen**       | **~4–11 s**                                | **~2.5–4 s**                                        |
 
 Two structural facts dominate: transcription starts only after the clip ends, and its cost scales
 with clip length. Everything below attacks those two facts first. Things already done well: LLM
@@ -84,12 +86,13 @@ utility-process spawn + ONNX model load + first-inference kernel warm-up **insid
 "Transcribing…" stage — typically several seconds, and the worst first impression the app makes.
 
 **Fix:**
+
 - At `capture:arm` (`src/main/ipc/register.ts:180`), when `sttProviderId === 'local-whisper'`,
   also fire `sttWorkers.ensureModel(settings.sttModelId, noop, signal)` best-effort, mirroring
   the existing LLM prewarm. Recording lasts many seconds — plenty of cover for the load.
 - Optionally also warm at app start when onboarding is complete (bootstrap in `main.ts`), and
   follow the load with a ~0.5 s silent-buffer inference: ONNX Runtime's first run compiles/plans
-  kernels, so the first *real* inference is slower than steady state even after the weights load.
+  kernels, so the first _real_ inference is slower than steady state even after the weights load.
 - The worker is deliberately killed to free memory (`stop()`); keep that behavior, but only
   reclaim after a long idle (e.g. 10–15 min, symmetrical with `OLLAMA_KEEP_ALIVE`) instead of
   never warming.
@@ -103,7 +106,8 @@ Whisper on CPU, transcription of a long question (30–60 s of interviewer audio
 than the question itself — and all of it is serialized after the speaker finishes.
 
 **Fix (staged, biggest structural win in the app):**
-1. **Speculative early start (small step, real win):** the endpointer knows silence *onset* long
+
+1. **Speculative early start (small step, real win):** the endpointer knows silence _onset_ long
    before it fires at 1.6 s. When continuous silence passes ~600 ms, snapshot the buffered audio,
    encode, and start STT speculatively; if speech resumes, abort (the coordinator already has
    clean abort plumbing). If the endpointer then fires, most or all of the transcript is already
@@ -121,7 +125,7 @@ than the question itself — and all of it is serialized after the speaker finis
 
 `ENDPOINT_DEFAULTS.trailingSilenceMs = 1600` (`src/shared/endpointing.ts:29`) is a sane default,
 but it is a constant tax on every exchange and is not user-tunable. Combined with L2's
-speculative start, the *perceived* cost can drop to near zero (the wait overlaps STT). Two
+speculative start, the _perceived_ cost can drop to near zero (the wait overlaps STT). Two
 further suggestions:
 
 - Expose trailing-silence (e.g. 1.2 / 1.6 / 2.0 s) in Preferences; interview questions end with
@@ -137,7 +141,7 @@ empty. Ollama reuses the prompt-prefix KV cache between requests when the prefix
 system prompt is deterministic per mode/target. Warming with the actual system prompt (and
 `num_predict: 0` or 1) means the real request's prompt-eval starts at the profile block instead of
 token zero. On CPU boxes prompt eval is often the visible chunk of "first token" — this is a cheap
-few-hundred-ms win. Keep the stable content (profile) *early* in the user message — it already is —
+few-hundred-ms win. Keep the stable content (profile) _early_ in the user message — it already is —
 so the prefix cache keeps helping across turns.
 
 ### L5. Smaller items
@@ -173,7 +177,7 @@ are too small to have it reliably, and the STT layer garbles the vocabulary.
 > titles, metrics, tools, credentials, or personal history. **If the profile does not cover what
 > was asked, say so plainly or keep the response generic and honest.**"
 
-That rule is exactly right for claims *about the user* — and exactly wrong for knowledge
+That rule is exactly right for claims _about the user_ — and exactly wrong for knowledge
 questions. Asked "what's the difference between `Task` and `ValueTask`?", a compliant model
 should answer from general knowledge; instead it is told to stay generic or disclaim. The fix
 costs only prompt text — split the grounding rule by claim type:
@@ -221,15 +225,15 @@ content this user needs to trust.
 **Recommendations** (verify current free-tier IDs at release time — the catalog header says IDs
 were last verified 2026-07-10):
 
-| Slot | Today | Recommend | Note |
-|---|---|---|---|
-| Groq free tier | `llama-3.1-8b-instant` | `llama-3.3-70b-versatile` | Same free tier; Groq speed keeps 70B first-token well under a second |
-| Cerebras free tier | `llama3.1-8b` | `llama-3.3-70b` | Cerebras streams ~2000+ tok/s; 70B stays effectively instant |
-| Gemini | `gemini-2.5-flash`, thinking off | keep — but allow a "let it think" toggle | A small thinking budget measurably helps hard system-design questions; latency trade-off should be the user's choice per question |
-| Ollama suggestions | 3B instruct models | add `qwen2.5-coder:7b-instruct` / `qwen3:8b` for machines with ≥16 GB RAM | Keep a 3B as the low-RAM option; `capabilities()` already reports `totalMemoryMb`, so the UI can recommend by RAM |
+| Slot               | Today                            | Recommend                                                                 | Note                                                                                                                              |
+| ------------------ | -------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Groq free tier     | `llama-3.1-8b-instant`           | `llama-3.3-70b-versatile`                                                 | Same free tier; Groq speed keeps 70B first-token well under a second                                                              |
+| Cerebras free tier | `llama3.1-8b`                    | `llama-3.3-70b`                                                           | Cerebras streams ~2000+ tok/s; 70B stays effectively instant                                                                      |
+| Gemini             | `gemini-2.5-flash`, thinking off | keep — but allow a "let it think" toggle                                  | A small thinking budget measurably helps hard system-design questions; latency trade-off should be the user's choice per question |
+| Ollama suggestions | 3B instruct models               | add `qwen2.5-coder:7b-instruct` / `qwen3:8b` for machines with ≥16 GB RAM | Keep a 3B as the low-RAM option; `capabilities()` already reports `totalMemoryMb`, so the UI can recommend by RAM                 |
 
 For this user specifically: **Cerebras or Groq with a 70B model is the sweet spot** — materially
-better technical answers than local 3B at *lower* latency than local inference. The catalog
+better technical answers than local 3B at _lower_ latency than local inference. The catalog
 change is one line per provider.
 
 ### Q4. STT garbles technical vocabulary, and nothing corrects it
@@ -241,11 +245,11 @@ then produces a confidently wrong answer. Three cheap layers of defense:
 1. **Bias the cloud transcriber.** Groq's transcription endpoint accepts a `prompt` field that
    biases decoding; `groqWhisper.ts` doesn't send it. Pass a short glossary assembled from a
    built-in SWE term list (JS/TS + .NET: `IEnumerable, IQueryable, LINQ, EF Core, ASP.NET,
-   middleware, async/await, closure, event loop, React, hooks, useEffect, TypeScript, Kubernetes,
-   idempotent, …`) plus the session notes (which already carry company/role context).
-2. **Let the LLM repair the transcript.** Add one system-prompt line: *"The transcript comes from
+middleware, async/await, closure, event loop, React, hooks, useEffect, TypeScript, Kubernetes,
+idempotent, …`) plus the session notes (which already carry company/role context).
+2. **Let the LLM repair the transcript.** Add one system-prompt line: _"The transcript comes from
    speech recognition and may mis-hear technical terms; infer the intended term from context
-   (e.g. 'I innumerable' → IEnumerable) instead of answering the literal words."* Large models do
+   (e.g. 'I innumerable' → IEnumerable) instead of answering the literal words."_ Large models do
    this reliably; it is free.
 3. **Steer model choice by session type.** For technical sessions recommend Whisper Small locally
    or Groq `whisper-large-v3-turbo` — the accuracy gap between Tiny/Base and Small is largest on
@@ -261,6 +265,7 @@ then produces a confidently wrong answer. Three cheap layers of defense:
 
 **Fix:** set params in one shared place (the request builder in `streamChatCompletions` plus each
 adapter) rather than per-adapter drift:
+
 - `temperature` ~0.3 for `technical`/`concise` modes, ~0.6 for `natural`/`star`.
 - Derive max tokens from the target instead of hardcoding: the prompt already computes a word
   target (`targetSeconds × 2.5 words/s`); tokens ≈ words × 1.4 plus ~40% headroom. This also
@@ -272,7 +277,7 @@ adapter) rather than per-adapter drift:
 
 No `num_ctx` is set on the Ollama request. Many Ollama models default to a 2048–4096-token
 context, while the transcript alone is allowed 40,000 chars (~10k tokens, `prompt.ts:32`) plus
-profile and notes. On overflow Ollama truncates *from the front* — the system prompt (with all the
+profile and notes. On overflow Ollama truncates _from the front_ — the system prompt (with all the
 grounding and injection-defense rules) is the first thing to go, silently. Set
 `options.num_ctx: 8192` explicitly, and cap profile + notes at prompt-assembly time the way the
 transcript already is.
@@ -284,7 +289,7 @@ Every session is independent. Real interviews chain: "…and how would you scale
 what was just said. Keep the last 1–2 exchanges (transcript + chosen answer) in coordinator
 session state and include them as a fenced `<previous_exchange>` block in the user prompt (same
 escaping discipline as the other blocks), cleared with Clear/session end and off by default if
-prompt size is a concern. This is the single biggest *realism* improvement for mock-interview
+prompt size is a concern. This is the single biggest _realism_ improvement for mock-interview
 flow, and it reuses the existing fencing machinery.
 
 ### Q8. The practice deck has zero technical questions
@@ -316,18 +321,18 @@ and consider defaulting the `technical` mode to 60–90.
 
 ## Priority roadmap
 
-| Priority | Item | Type | Effort |
-|---|---|---|---|
-| 1 | Q1 + Q2 + Q4.2 — technical-question prompt rules, `technical` mode, transcript-repair line | Quality | Small — prompt/text only |
-| 2 | Q3 — 70B free-tier defaults (Groq/Cerebras), coder-model Ollama suggestions | Quality | Trivial |
-| 3 | L1 — pre-warm local Whisper at capture-arm (+ app start) | Latency | Small |
-| 4 | Q5 + Q6 — unified sampling params, target-derived max tokens, `num_ctx` | Quality | Small |
-| 5 | Q8 + Q9 — technical practice categories; 90/120 s targets | Quality | Small (data) |
-| 6 | L2.1 — speculative STT start at silence onset | Latency | Medium |
-| 7 | Q7 — previous-exchange context for follow-ups | Quality | Medium |
-| 8 | Q4.1 — Groq STT `prompt` glossary biasing | Quality | Small |
-| 9 | L3 + L4 + L5 — endpointer tuning/adaptivity, real-prompt LLM warmup, FLAC upload | Latency | Small each |
-| 10 | L2.2 — incremental transcription during recording (+ live preview) | Latency | Large |
+| Priority | Item                                                                                       | Type    | Effort                   |
+| -------- | ------------------------------------------------------------------------------------------ | ------- | ------------------------ |
+| 1        | Q1 + Q2 + Q4.2 — technical-question prompt rules, `technical` mode, transcript-repair line | Quality | Small — prompt/text only |
+| 2        | Q3 — 70B free-tier defaults (Groq/Cerebras), coder-model Ollama suggestions                | Quality | Trivial                  |
+| 3        | L1 — pre-warm local Whisper at capture-arm (+ app start)                                   | Latency | Small                    |
+| 4        | Q5 + Q6 — unified sampling params, target-derived max tokens, `num_ctx`                    | Quality | Small                    |
+| 5        | Q8 + Q9 — technical practice categories; 90/120 s targets                                  | Quality | Small (data)             |
+| 6        | L2.1 — speculative STT start at silence onset                                              | Latency | Medium                   |
+| 7        | Q7 — previous-exchange context for follow-ups                                              | Quality | Medium                   |
+| 8        | Q4.1 — Groq STT `prompt` glossary biasing                                                  | Quality | Small                    |
+| 9        | L3 + L4 + L5 — endpointer tuning/adaptivity, real-prompt LLM warmup, FLAC upload           | Latency | Small each               |
+| 10       | L2.2 — incremental transcription during recording (+ live preview)                         | Latency | Large                    |
 
 Items 1–5 are roughly a day of work combined and would transform the app for its actual intended
 use; item 10 is the flagship engineering project when latency next needs a step change.

@@ -4,10 +4,12 @@ import {
   downmixToMono,
   encodeWav,
   floatTo16BitPcm,
+  hasSound,
   parseWavHeader,
   peak,
   resample,
   rms,
+  trimSilence,
 } from '../../src/shared/audio';
 import { sineWav, silentWav } from '../helpers/wav';
 
@@ -200,5 +202,70 @@ describe('rms / peak', () => {
 
   it('reports peak from negative excursions', () => {
     expect(peak(new Float32Array([0.1, -0.9, 0.2]))).toBeCloseTo(0.9, 6);
+  });
+});
+
+function tone(seconds: number, amplitude = 0.3, sampleRate = 16_000): Float32Array {
+  const out = new Float32Array(Math.round(seconds * sampleRate));
+  for (let i = 0; i < out.length; i++) {
+    out[i] = amplitude * Math.sin((2 * Math.PI * 440 * i) / sampleRate);
+  }
+  return out;
+}
+
+function concat(...parts: Float32Array[]): Float32Array {
+  const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+describe('hasSound', () => {
+  it('is false for digital silence', () => {
+    expect(hasSound(new Float32Array(16_000), 16_000)).toBe(false);
+    expect(hasSound(new Float32Array(0), 16_000)).toBe(false);
+  });
+
+  it('finds a short word after a long silence that whole-buffer RMS averages away', () => {
+    const samples = concat(new Float32Array(16_000 * 4), tone(0.15, 0.01));
+    expect(rms(samples)).toBeLessThan(0.004);
+    expect(hasSound(samples, 16_000)).toBe(true);
+  });
+
+  it('ignores a level below the threshold', () => {
+    expect(hasSound(tone(1, 0.001), 16_000)).toBe(false);
+  });
+});
+
+describe('trimSilence', () => {
+  it('strips leading and trailing silence but keeps padding around the speech', () => {
+    const speech = tone(2);
+    const samples = concat(new Float32Array(16_000 * 3), speech, new Float32Array(16_000 * 2));
+    const trimmed = trimSilence(samples, 16_000);
+    expect(Math.abs(trimmed.leadingMs - (3000 - 250))).toBeLessThan(60);
+    expect(Math.abs(trimmed.trailingMs - (2000 - 250))).toBeLessThan(60);
+    expect(Math.abs(trimmed.samples.length - (speech.length + 2 * 4000))).toBeLessThan(1000);
+  });
+
+  it('returns the input itself when there is nothing to trim', () => {
+    const speech = tone(2);
+    expect(trimSilence(speech, 16_000).samples).toBe(speech);
+  });
+
+  it('returns the input untouched when nothing reaches the threshold', () => {
+    const quiet = tone(2, 0.001);
+    const trimmed = trimSilence(quiet, 16_000);
+    expect(trimmed.samples).toBe(quiet);
+    expect(trimmed.leadingMs).toBe(0);
+  });
+
+  it('returns a copy, not a view over the original buffer', () => {
+    const samples = concat(new Float32Array(16_000 * 2), tone(1));
+    const trimmed = trimSilence(samples, 16_000);
+    expect(trimmed.samples.buffer).not.toBe(samples.buffer);
+    expect(trimmed.samples.byteOffset).toBe(0);
   });
 });

@@ -56,11 +56,7 @@ export class LocalWhisperProvider implements SttProvider {
   }
 
   async transcribe(input: TranscribeInput): Promise<TranscriptResult> {
-    const { samples, sampleRate } = decodeWavToFloat32(input.audio);
-    const audio =
-      sampleRate === TARGET_SAMPLE_RATE
-        ? samples
-        : resample(samples, sampleRate, TARGET_SAMPLE_RATE);
+    const audio = input.samples ?? decodeTo16k(input.audio);
     const timeout = AbortSignal.timeout(TIMEOUTS.localStt);
     const signal = AbortSignal.any([input.signal, timeout]);
     const result = await this.workers.transcribe({
@@ -76,4 +72,11 @@ export class LocalWhisperProvider implements SttProvider {
       durationMs: (audio.length / TARGET_SAMPLE_RATE) * 1000,
     };
   }
+}
+
+function decodeTo16k(wav: Uint8Array): Float32Array {
+  const { samples, sampleRate } = decodeWavToFloat32(wav);
+  return sampleRate === TARGET_SAMPLE_RATE
+    ? samples
+    : resample(samples, sampleRate, TARGET_SAMPLE_RATE);
 }

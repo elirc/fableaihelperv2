@@ -8,12 +8,12 @@ CueDeck is a Windows desktop app that records a short clip of the computer's own
 
 Electron apps are not one program; they are several cooperating OS processes with very different privilege levels. CueDeck uses four kinds:
 
-| Process | Source root | Privileges | Role |
-|---|---|---|---|
-| **Main** | `src/main/` | Full Node.js + Electron APIs | Owns windows, settings, secrets, network calls, the session pipeline |
-| **Preload** | `src/preload/preload.ts` | Limited bridge context | Exposes a fixed, typed API to the page |
-| **Renderer** | `src/renderer/` | None (sandboxed browser page) | React UI only |
-| **Utility (STT worker)** | `src/main/workers/sttWorker.ts` | Node.js, separate process | Runs Whisper inference via Transformers.js |
+| Process                  | Source root                     | Privileges                    | Role                                                                 |
+| ------------------------ | ------------------------------- | ----------------------------- | -------------------------------------------------------------------- |
+| **Main**                 | `src/main/`                     | Full Node.js + Electron APIs  | Owns windows, settings, secrets, network calls, the session pipeline |
+| **Preload**              | `src/preload/preload.ts`        | Limited bridge context        | Exposes a fixed, typed API to the page                               |
+| **Renderer**             | `src/renderer/`                 | None (sandboxed browser page) | React UI only                                                        |
+| **Utility (STT worker)** | `src/main/workers/sttWorker.ts` | Node.js, separate process     | Runs Whisper inference via Transformers.js                           |
 
 **Why the split?** The renderer displays a lot of untrusted-ish data (transcripts from arbitrary audio, streamed model output). If the renderer were compromised, we do not want it to be able to read API keys, open sockets to arbitrary hosts, or touch the filesystem. So the renderer is created with `sandbox: true`, `contextIsolation: true`, and `nodeIntegration: false` (see `SECURE_PREFERENCES` in `src/main/windows/windows.ts`). Quick glossary:
 
@@ -60,7 +60,7 @@ flowchart LR
 
 ### Build wiring
 
-Electron Forge + Vite builds four bundles (see `forge.config.ts`): `src/main/main.ts` (main), `src/preload/preload.ts` (preload), `src/main/workers/sttWorker.ts` (worker, built as a *main*-target CJS bundle with `@huggingface/transformers` kept external — see `vite.worker.config.ts`), and one renderer named `main_window`. Both app windows (Coach and Preferences) load the same renderer bundle; they differ only by URL hash (`#/` vs `#/preferences`), routed in `src/renderer/App.tsx` by a tiny hash-router hook.
+Electron Forge + Vite builds four bundles (see `forge.config.ts`): `src/main/main.ts` (main), `src/preload/preload.ts` (preload), `src/main/workers/sttWorker.ts` (worker, built as a _main_-target CJS bundle with `@huggingface/transformers` kept external — see `vite.worker.config.ts`), and one renderer named `main_window`. Both app windows (Coach and Preferences) load the same renderer bundle; they differ only by URL hash (`#/` vs `#/preferences`), routed in `src/renderer/App.tsx` by a tiny hash-router hook.
 
 Startup order lives in `src/main/main.ts` → `bootstrap()`: construct stores → construct `SttWorkerManager` → register all providers into a `ProviderRegistry` → build `Diagnostics` and `SessionCoordinator` → `hardenSession()` → install the display-media handler → `registerIpc(services)` → create the coach window.
 
@@ -88,7 +88,14 @@ sequenceDiagram
   Note over M: setDisplayMediaRequestHandler checks<br/>isTrustedAppUrl + grant.consume()
   M-->>C: loopback audio + throwaway video track
   C->>C: stop video track; AudioWorklet streams<br/>mono chunks + rms/peak (~15 Hz meter)
-  U->>C: click Stop & respond
+  Note over M,LLM: capture:arm also fires coordinator.prewarm():<br/>STT model load + LLM prompt-cache fill (system + profile)
+  Note over C: SilenceEndpointer: ~0.7 s into a pause → 'speculate'
+  C->>C: recorder.snapshot() (clip so far, still recording)
+  C->>P: speculateSession(sessionId, wav)
+  P->>M: invoke 'session:speculate'
+  M->>SC: speculate(sessionId, bytes)
+  SC->>STT: transcribe(snapshot) — result parked, no events
+  Note over C: endpointer: pause reaches the chosen length → 'fire'<br/>(or the user clicks Stop & respond)
   C->>C: recorder.stop(): merge, resample 48k→16k, encodeWav
   C->>P: submitSession(sessionId, wav, options, encodeMs)
   P->>M: invoke 'session:submit' (meta + ArrayBuffer)
@@ -96,8 +103,13 @@ sequenceDiagram
   M->>SC: submit(sessionId, bytes, options, encodeMs)
   SC->>SC: parseWavHeader, duration + silence checks
   SC-->>C: event {type:'state', state:'transcribing'}
-  SC->>STT: transcribe(wav, signal)
-  STT-->>SC: transcript
+  alt final clip = snapshot + silence only
+    SC->>SC: await the parked speculative transcript (often already done)
+  else speech followed the snapshot, or no snapshot
+    SC->>SC: trim leading/trailing silence
+    SC->>STT: transcribe(wav, signal)
+    STT-->>SC: transcript
+  end
   SC-->>C: event {type:'transcript', text}
   SC->>SC: buildPrompt (fenced untrusted blocks)
   SC-->>C: event {type:'state', state:'generating'}
@@ -114,20 +126,25 @@ Step by step, with the exact code:
 
 1. **Button press** (`src/renderer/routes/Coach.tsx`, `startRecording`). The renderer mints a `sessionId` with `crypto.randomUUID()`, dispatches `{ type: 'arm', sessionId }` to the reducer (phase becomes `arming_capture`), and constructs a `ClipRecorder`.
 
-2. **Capture grant** (`window.cuedeck.armCapture` → `capture:arm` in `src/main/ipc/register.ts` → `src/main/security/captureGrant.ts`). Capture is *deny-by-default*. `CaptureGrant.arm()` records a timestamp; the grant lives `CAPTURE_GRANT_TTL_MS` (8 s, `src/shared/constants.ts`) and is one-use: `consume()` clears it whether or not it was valid. The display-media handler installed in `src/main/main.ts` refuses every `getDisplayMedia` request whose frame URL is not the app itself (`isTrustedAppUrl`) or whose grant is missing/expired/already used. When it does grant, it supplies the first screen source (Electron on Windows requires *some* video source) plus `audio: 'loopback'` — the system's output audio. This is why the e2e test "getDisplayMedia without an armed grant is denied" passes without any UI picker appearing.
+2. **Capture grant** (`window.cuedeck.armCapture` → `capture:arm` in `src/main/ipc/register.ts` → `src/main/security/captureGrant.ts`). Capture is _deny-by-default_. `CaptureGrant.arm()` records a timestamp; the grant lives `CAPTURE_GRANT_TTL_MS` (8 s, `src/shared/constants.ts`) and is one-use: `consume()` clears it whether or not it was valid. The display-media handler installed in `src/main/main.ts` refuses every `getDisplayMedia` request whose frame URL is not the app itself (`isTrustedAppUrl`) or whose grant is missing/expired/already used. When it does grant, it supplies the first screen source (Electron on Windows requires _some_ video source) plus `audio: 'loopback'` — the system's output audio. This is why the e2e test "getDisplayMedia without an armed grant is denied" passes without any UI picker appearing.
 
 3. **Recording** (`src/renderer/audio/recorder.ts`). `ClipRecorder.start()` calls `getDisplayMedia`, immediately stops the video tracks (only audio is retained), creates an `AudioContext`, and loads the AudioWorklet module `public/audio-capture-worklet.js`. The worklet runs on the audio rendering thread; every 128-frame quantum it downmixes to mono, computes RMS/peak, and posts the samples to the recorder. The recorder buffers chunks, throttles level callbacks to ~15 Hz for the meter, and auto-stops at `maxClipSeconds`. The reducer's `meter` action also tracks `silentSoFar`, which drives the "No audio detected yet" banner after 3 s of silence.
+
+   Meanwhile, `capture:arm` has fired `SessionCoordinator.prewarm()`: the local Whisper model is loaded into the utility process (and its first-inference cost paid on a second of silence), and the LLM is warmed with the real system prompt plus profile blocks (`buildPromptPrefix` in `src/shared/prompt.ts`) so a local model's prompt cache already covers everything but the transcript. The same prewarm runs once at app start.
+
+   **Endpointing and speculation** (`src/shared/endpointing.ts`). Every level sample also feeds a `SilenceEndpointer`. About 0.7 s into a pause (after at least 1.2 s of speech) it returns `'speculate'`: `Coach.tsx` calls `recorder.snapshot()` — an encode of the clip so far, recording continues — and sends it over `session:speculate`. The coordinator transcribes the snapshot in the background and parks the result; nothing is emitted. When the pause reaches the configured length (`trailingSilenceMs`, a preset chosen next to the auto-respond toggle) the endpointer returns `'fire'` and the renderer stops the clip exactly as if Stop had been clicked. If speech resumes instead, the flag re-arms and a later pause produces a fresher snapshot; a superseded cloud request is aborted (it costs quota), while a local inference is left to finish because interrupting it means killing the worker and reloading the model.
 
 4. **Stop and encode** (`ClipRecorder.stop()`). Chunks are merged, resampled from the device rate (typically 48 kHz) to `TARGET_SAMPLE_RATE` 16 kHz with the box-average resampler in `src/shared/audio.ts`, and encoded as mono 16-bit PCM WAV (`encodeWav`). Capture buffers are released. `encodeMs` is measured here and travels with the submission for the metrics footer.
 
 5. **Submission across IPC** (`session:submit` in `src/main/ipc/register.ts`). The metadata (`sessionId`, `options`, `encodeMs`) is validated with `sessionSubmitMetaSchema` from `src/shared/schemas.ts`; the WAV travels as a second binary argument and is bounds-checked against `WAV_MIN_BYTES`/`WAV_MAX_BYTES` before anything parses it. The handler returns `{ accepted: true }` immediately — the pipeline runs asynchronously and all further results arrive as **events**, not as the IPC return value.
 
 6. **The coordinator** (`src/main/sessions/coordinator.ts`). `SessionCoordinator` is the authoritative session lifecycle. There is at most one active session; `begin()` aborts and retires any previous one via its `AbortController`. `submit()` then:
-   - re-validates the audio *content*: `parseWavHeader` (real RIFF parsing), minimum duration (`MIN_CLIP_SECONDS` = 0.5 s), maximum duration (`maxClipSeconds + 5`), and an RMS silence check (`SILENCE_RMS_THRESHOLD`) — all *before* any provider is called, so silent clips never hit the network;
-   - emits `{ type: 'state', state: 'transcribing' }`, looks up the STT provider from the registry, and calls `transcribe` with a combined signal: `AbortSignal.any([session abort, stage timeout])`. Timeouts come from `TIMEOUTS` in `src/shared/constants.ts` (local STT gets 120 s, cloud 45 s);
+   - re-validates the audio _content_: `parseWavHeader` (real RIFF parsing), minimum duration (`MIN_CLIP_SECONDS` = 0.5 s), maximum duration (`maxClipSeconds + 5`), and an RMS silence check (`SILENCE_RMS_THRESHOLD`) — all _before_ any provider is called, so silent clips never hit the network;
+   - emits `{ type: 'state', state: 'transcribing' }`, reads the active profile (needed for the prompt anyway) and fires the LLM warmup with the real prompt prefix;
+   - checks whether the parked speculative transcript still applies: it must belong to this session and the final clip must extend the snapshot with nothing but silence (`hasSound` over the tail, window by window). If so, the coordinator awaits that job — often already complete — and the STT stage costs nothing; `SessionMetrics.sttSpeculative` records this for the status rail. Otherwise it trims leading/trailing silence (`trimSilence`, fewer bytes to upload and fewer audio-seconds billed against a cloud quota) and calls `transcribe` with a combined signal: `AbortSignal.any([session abort, stage timeout])`. Timeouts come from `TIMEOUTS` in `src/shared/constants.ts` (local STT gets 120 s, cloud 45 s). Local Whisper receives the already-decoded samples alongside the WAV bytes so it never decodes twice;
    - emits the `transcript` event, then calls `generate()`.
 
-7. **Prompt assembly** (`src/shared/prompt.ts`). `buildPrompt` produces a system prompt (mode rules, target speaking time, anti-fabrication instructions) and a user prompt where the profile, role context, session notes, and transcript are wrapped in named blocks (`<heard_transcript>` etc.). These are treated as *untrusted data*: `escapeBlock` defangs any embedded closing tags, and the system prompt tells the model to never treat block contents as instructions. This is the app's prompt-injection defence; keep it intact when touching prompts.
+7. **Prompt assembly** (`src/shared/prompt.ts`). `buildPrompt` produces a system prompt (mode rules, target speaking time, anti-fabrication instructions) and a user prompt where the profile, role context, session notes, and transcript are wrapped in named blocks (`<heard_transcript>` etc.). These are treated as _untrusted data_: `escapeBlock` defangs any embedded closing tags, and the system prompt tells the model to never treat block contents as instructions. This is the app's prompt-injection defence; keep it intact when touching prompts.
 
 8. **Streaming generation** (`coordinator.generate`). The LLM provider returns an `AsyncIterable<AnswerDelta>`. The coordinator enforces two timeouts: a first-token timeout (60 s, cleared when the first delta arrives) and a total stream timeout (120 s). Each delta is re-numbered with the coordinator's own monotonic `context.nextSequence` and emitted as an `answer-delta` event. Output is capped at `ANSWER_CHAR_CAP` (4,000 chars) with the surrogate-pair-safe `capText` from `src/shared/streaming.ts`. On completion it emits `answer-complete` with `SessionMetrics` and, if history is enabled, persists a `HistoryItem` (a history failure never fails the session).
 
@@ -135,7 +152,13 @@ Step by step, with the exact code:
 
 10. **Renderer state machine** (`src/renderer/state/sessionMachine.ts`). `coachReducer` is a pure reducer (unit-tested in isolation). Its two hard rules: events whose `sessionId` does not match the current session are ignored (a retired session can never repaint the UI), and `answer-delta` events with a sequence ≤ `lastSequence` are dropped (no duplicates, no reordering). Cancellation is renderer-driven: while phase is `cancelling`, only a `ready` state event is accepted.
 
-**Cancel** at any point: `Coach.tsx` aborts the recorder locally, then calls `session:cancel`, which aborts the coordinator's controller and disarms the capture grant. The coordinator maps aborts to no user-visible error (`REQUEST_CANCELLED` is swallowed to `ready` in the reducer). **Regenerate** (`session:regenerate`) re-runs only step 7–10 from an edited transcript, with a fresh `sessionId` — no re-recording, no re-transcription.
+**Conversation context.** After each completed answer the coordinator remembers the exchange (transcript + answer, at most `CONVERSATION_EXCHANGES` = 2, in memory only) and emits `{ type: 'conversation', exchanges }` so the "Heard" card can show the depth. `buildUserPrompt` fences them in `<previous_exchanges>` between the profile blocks and the session notes, each field capped, with the same closing-tag defanging as every other block. Regenerating the same transcript replaces the last exchange instead of adding one. `session:clearConversation` (the Clear button) forgets them.
+
+**Interviewer follow-up** (`session:followUp` → `coordinator.followUp`). Uses `buildInterviewerPrompt` (the model plays the interviewer, output only the question) over the remembered exchanges, streams through the same `streamWithBackup` path with a small token ceiling, and delivers the cleaned question as a `{ type: 'follow-up', text }` event; the reducer puts it in the transcript box and returns to `ready`. The question itself is not recorded — the answer to it will be.
+
+**Backup response model.** `streamWithBackup` runs the primary model; if it fails _before producing any text_ and the user has configured `llmBackupProviderId`/`llmBackupModelId`, the same prompt is streamed once from the backup and `SessionMetrics.usedBackup` is set so the status rail can say so. A failure after the first token is never retried (that would show a second answer under the first), and a cancelled session never falls back. With a backup configured the primary's first-token patience drops to `BACKUP_FIRST_TOKEN_TIMEOUT_MS` (20 s).
+
+**Cancel** at any point: `Coach.tsx` aborts the recorder locally, then calls `session:cancel`, which aborts the coordinator's controller (and any speculative transcription for that session) and disarms the capture grant. The coordinator maps aborts to no user-visible error (`REQUEST_CANCELLED` is swallowed to `ready` in the reducer). **Regenerate** (`session:regenerate`) re-runs only step 7–10 from an edited transcript, with a fresh `sessionId` — no re-recording, no re-transcription.
 
 ## 3. The provider registry pattern
 
@@ -148,14 +171,14 @@ All STT and LLM backends implement one of two small interfaces in `src/main/prov
 
 The adapters:
 
-| Provider | File | Notes |
-|---|---|---|
-| Local Whisper (STT) | `src/main/providers/stt/localWhisper.ts` | Delegates to `SttWorkerManager` / the utility process |
-| Groq Whisper (STT) | `src/main/providers/stt/groqWhisper.ts` | Multipart upload, verbose JSON response |
-| Gemini audio (STT) | `src/main/providers/stt/geminiAudio.ts` | `generateContent` with inline base64 audio; STT only, by design |
-| Ollama (LLM) | `src/main/providers/llm/ollama.ts` | NDJSON streaming over loopback HTTP |
+| Provider                           | File                                      | Notes                                                                                                                                                                                                                                                                                   |
+| ---------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local Whisper (STT)                | `src/main/providers/stt/localWhisper.ts`  | Delegates to `SttWorkerManager` / the utility process                                                                                                                                                                                                                                   |
+| Groq Whisper (STT)                 | `src/main/providers/stt/groqWhisper.ts`   | Multipart upload, verbose JSON response                                                                                                                                                                                                                                                 |
+| Gemini audio (STT)                 | `src/main/providers/stt/geminiAudio.ts`   | `generateContent` with inline base64 audio; STT only, by design                                                                                                                                                                                                                         |
+| Ollama (LLM)                       | `src/main/providers/llm/ollama.ts`        | NDJSON streaming over loopback HTTP                                                                                                                                                                                                                                                     |
 | Groq / Cerebras / OpenRouter (LLM) | `groq.ts`, `cerebras.ts`, `openRouter.ts` | Descriptor-driven subclasses of `OpenAiCompatibleLlmProvider` in `openAiCompatible.ts` (shared SSE streaming, HTTP status → error-code mapping, one Retry-After honor on 429, warmup preconnect). Adding another OpenAI-compatible endpoint is a descriptor + an `ALLOWED_HOSTS` entry. |
-| Gemini (LLM) | `gemini.ts` | `streamGenerateContent` SSE |
+| Gemini (LLM)                       | `gemini.ts`                               | `streamGenerateContent` SSE                                                                                                                                                                                                                                                             |
 
 **First-token latency.** The coordinator fires the LLM's optional `warmup` while transcription is still running, so provider setup cost overlaps STT instead of adding to time-to-first-token: Ollama preloads the model (`/api/chat` with an empty `messages` array) and every chat request carries `keep_alive` so the model stays resident between turns; cloud adapters open an authenticated keep-alive TLS connection that Node's fetch pools for the generate call. Warmup is best-effort — failures are swallowed and resurface with proper error mapping in the real generate call. Gemini requests additionally disable 2.5 Flash's default "thinking" phase (`thinkingBudget: 0`), which otherwise delays the first token by seconds.
 

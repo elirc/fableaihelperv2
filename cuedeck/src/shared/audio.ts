@@ -178,3 +178,77 @@ export function peak(samples: Float32Array): number {
   }
   return max;
 }
+
+/** Options for window-based silence detection. */
+export interface SilenceScanOptions {
+  /** A window whose RMS reaches this counts as sound. */
+  thresholdRms: number;
+  /** Analysis window length in milliseconds. */
+  windowMs: number;
+}
+
+export const SILENCE_SCAN_DEFAULTS: SilenceScanOptions = { thresholdRms: 0.004, windowMs: 30 };
+
+/**
+ * True when any analysis window reaches the threshold. Window-based rather
+ * than whole-buffer RMS so a short word at the end of a long silence is not
+ * averaged away. Used to check that nothing was said after a speculative
+ * snapshot was taken.
+ */
+export function hasSound(
+  samples: Float32Array,
+  sampleRate: number,
+  options: SilenceScanOptions = SILENCE_SCAN_DEFAULTS,
+): boolean {
+  const window = Math.max(1, Math.round((sampleRate * options.windowMs) / 1000));
+  for (let start = 0; start < samples.length; start += window) {
+    const end = Math.min(samples.length, start + window);
+    if (rms(samples.subarray(start, end)) >= options.thresholdRms) return true;
+  }
+  return false;
+}
+
+export interface TrimResult {
+  samples: Float32Array;
+  /** Milliseconds removed from the start. */
+  leadingMs: number;
+  /** Milliseconds removed from the end. */
+  trailingMs: number;
+}
+
+/**
+ * Drop leading and trailing near-silence, keeping `padMs` of context on
+ * each side. Less audio means fewer bytes to upload and fewer seconds
+ * billed against a cloud transcription quota; locally it can save a whole
+ * 30 s Whisper window when a clip straddles the chunk boundary. When no
+ * window reaches the threshold the input is returned untouched — deciding
+ * that a clip is silent is the caller's job.
+ */
+export function trimSilence(
+  samples: Float32Array,
+  sampleRate: number,
+  options: SilenceScanOptions & { padMs: number } = { ...SILENCE_SCAN_DEFAULTS, padMs: 250 },
+): TrimResult {
+  const window = Math.max(1, Math.round((sampleRate * options.windowMs) / 1000));
+  let first = -1;
+  let last = -1;
+  for (let start = 0; start < samples.length; start += window) {
+    const end = Math.min(samples.length, start + window);
+    if (rms(samples.subarray(start, end)) >= options.thresholdRms) {
+      if (first < 0) first = start;
+      last = end;
+    }
+  }
+  if (first < 0) return { samples, leadingMs: 0, trailingMs: 0 };
+  const pad = Math.round((sampleRate * options.padMs) / 1000);
+  const from = Math.max(0, first - pad);
+  const to = Math.min(samples.length, last + pad);
+  if (from === 0 && to === samples.length) return { samples, leadingMs: 0, trailingMs: 0 };
+  return {
+    // A copy, not a view: a view dragged the whole original buffer through
+    // structured clone when posted to the STT worker.
+    samples: samples.slice(from, to),
+    leadingMs: (from / sampleRate) * 1000,
+    trailingMs: ((samples.length - to) / sampleRate) * 1000,
+  };
+}

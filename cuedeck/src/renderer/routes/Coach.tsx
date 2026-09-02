@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { answerStats } from '../../shared/answerStats';
+import { PAUSE_PRESETS } from '../../shared/constants';
 import type { AnswerMode, PublicError, PublicSettings, TargetSeconds } from '../../shared/domain';
-import { SilenceEndpointer } from '../../shared/endpointing';
+import { ENDPOINT_DEFAULTS, SilenceEndpointer } from '../../shared/endpointing';
 import { publicError } from '../../shared/errors';
 import { PRACTICE_CATEGORIES, PracticeDeck, type PracticeCategory } from '../../shared/practice';
 import { ClipRecorder } from '../audio/recorder';
@@ -70,6 +71,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     return window.cuedeck.onSessionEvent((event) => {
       dispatch({ type: 'session-event', event });
       if (event.type === 'answer-complete') setLiveMessage('Response ready.');
+      if (event.type === 'follow-up') setLiveMessage('Interviewer follow-up ready.');
       if (event.type === 'error') setLiveMessage(event.error.message);
     });
   }, []);
@@ -102,13 +104,37 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     const sessionId = crypto.randomUUID();
     sessionRef.current = sessionId;
     dispatch({ type: 'arm', sessionId });
-    const endpointer = settings.autoStopOnSilence ? new SilenceEndpointer() : null;
+    // With auto-respond off the endpointer never fires, but it still flags
+    // every pause so the transcript is usually ready by the time the user
+    // clicks Stop.
+    const trailingSilenceMs = settings.autoStopOnSilence
+      ? settings.trailingSilenceMs
+      : Number.POSITIVE_INFINITY;
+    const endpointer = new SilenceEndpointer({
+      ...ENDPOINT_DEFAULTS,
+      trailingSilenceMs,
+      // Keep a real head start even on the quickest preset.
+      speculateAfterMs: Math.min(ENDPOINT_DEFAULTS.speculateAfterMs, trailingSilenceMs - 300),
+    });
     const recorder = new ClipRecorder(settings.maxClipSeconds, {
       onLevel: (rms, peak, elapsedMs) => {
         dispatch({ type: 'meter', rms, peak, elapsedMs });
-        if (endpointer?.push(rms, elapsedMs)) {
+        const signal = endpointer.pushDetailed(rms, elapsedMs);
+        if (signal === 'fire') {
           setLiveMessage('Pause detected — responding.');
           void stopRecording();
+        } else if (signal === 'speculate') {
+          // The speaker may be done: start transcribing what we have while
+          // the endpointer waits out the rest of the pause. If they carry
+          // on, the final clip simply will not match and a fresh pass runs.
+          try {
+            const clip = recorder.snapshot();
+            void window.cuedeck
+              .speculateSession(sessionId, clip.wav, settings.sttLanguage)
+              .catch(() => undefined);
+          } catch {
+            // Best-effort: the real submit does not depend on it.
+          }
         }
       },
       onAutoStop: () => void stopRecording(),
@@ -124,7 +150,13 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       await recorder.abort();
       dispatch({ type: 'capture-failed', error: asCaptureError(err) });
     }
-  }, [settings.maxClipSeconds, settings.autoStopOnSilence, stopRecording]);
+  }, [
+    settings.maxClipSeconds,
+    settings.autoStopOnSilence,
+    settings.trailingSilenceMs,
+    settings.sttLanguage,
+    stopRecording,
+  ]);
 
   const cancel = useCallback(async () => {
     const sessionId = sessionRef.current;
@@ -152,6 +184,22 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     },
     [state.transcript],
   );
+
+  const followUp = useCallback(async () => {
+    const sessionId = crypto.randomUUID();
+    sessionRef.current = sessionId;
+    dispatch({ type: 'follow-up-requested', sessionId });
+    await window.cuedeck
+      .followUp(sessionId, { sessionNotes: sessionNotesOption() })
+      .catch((err) => dispatch({ type: 'capture-failed', error: asPublicError(err) }));
+  }, []);
+
+  const clearAll = useCallback(async () => {
+    dispatch({ type: 'reset' });
+    await window.cuedeck.clearConversation().catch(() => undefined);
+    dispatch({ type: 'conversation-cleared' });
+    setLiveMessage('Cleared. The next question starts a new conversation.');
+  }, []);
 
   const copyAnswer = useCallback(async () => {
     await navigator.clipboard.writeText(state.answer);
@@ -189,6 +237,22 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     await window.cuedeck.updatePublicSettings({ autoStopOnSilence });
     await onSettingsChanged();
   };
+
+  const setPauseLength = async (trailingSilenceMs: number) => {
+    await window.cuedeck.updatePublicSettings({ trailingSilenceMs });
+    await onSettingsChanged();
+  };
+  const pauseOptions: Array<{ ms: number; label: string }> = PAUSE_PRESETS.some(
+    (p) => p.ms === settings.trailingSilenceMs,
+  )
+    ? [...PAUSE_PRESETS]
+    : [
+        ...PAUSE_PRESETS,
+        {
+          ms: settings.trailingSilenceMs,
+          label: `Custom (${(settings.trailingSilenceMs / 1000).toFixed(1)} s)`,
+        },
+      ];
 
   const drawPracticeQuestion = () => {
     if (!deckRef.current) deckRef.current = new PracticeDeck(practiceCategory);
@@ -277,16 +341,32 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
               <div style={{ width: `${Math.min(100, state.level.rms * 700)}%` }} />
             </div>
           </div>
-          <label className="row auto-stop">
-            <input
-              type="checkbox"
+          <div className="row auto-stop">
+            <label className="row">
+              <input
+                type="checkbox"
+                style={{ width: 'auto' }}
+                checked={settings.autoStopOnSilence}
+                onChange={(e) => void setAutoStop(e.target.checked)}
+                data-testid="auto-stop-toggle"
+              />
+              <span>Auto-respond when the speaker pauses</span>
+            </label>
+            <select
+              aria-label="pause length before responding"
+              value={settings.trailingSilenceMs}
+              onChange={(e) => void setPauseLength(Number(e.target.value))}
+              disabled={!settings.autoStopOnSilence}
+              data-testid="pause-length"
               style={{ width: 'auto' }}
-              checked={settings.autoStopOnSilence}
-              onChange={(e) => void setAutoStop(e.target.checked)}
-              data-testid="auto-stop-toggle"
-            />
-            <span>Auto-respond when the speaker pauses</span>
-          </label>
+            >
+              {pauseOptions.map((p) => (
+                <option key={p.ms} value={p.ms}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
           {showSilenceWarning && (
             <p className="warn-banner" role="alert">
               No audio detected yet — check that the conversation audio is playing on this computer.
@@ -329,7 +409,9 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             </div>
             <p className="hint">
               The question lands in “Heard” below — answer it aloud first, then press “Respond to
-              edited text” to compare with a suggested response.
+              edited text” to compare with a suggested response. “Interviewer follow-up” then asks
+              the next question based on what has been said, so a deck question can become a
+              realistic multi-turn interview.
             </p>
           </section>
         )}
@@ -355,6 +437,12 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             <h2>
               Heard
               <span className="actions">
+                {state.conversationDepth > 0 && (
+                  <span className="deck-progress" data-testid="conversation-depth">
+                    context: {state.conversationDepth}{' '}
+                    {state.conversationDepth === 1 ? 'exchange' : 'exchanges'}
+                  </span>
+                )}
                 <button
                   className="small"
                   onClick={() => void regenerate()}
@@ -390,9 +478,10 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
               </button>
               <button
                 className="small"
-                onClick={() => dispatch({ type: 'reset' })}
-                disabled={!state.answer && !state.transcript}
+                onClick={() => void clearAll()}
+                disabled={!state.answer && !state.transcript && state.conversationDepth === 0}
                 data-testid="clear-button"
+                title="Clear the cards and forget the conversation context"
               >
                 Clear
               </button>
@@ -457,6 +546,15 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             >
               Try again
             </button>
+            <button
+              className="small"
+              disabled={state.conversationDepth === 0 || busy}
+              onClick={() => void followUp()}
+              data-testid="follow-up-button"
+              title="Ask the next interviewer question based on the conversation so far"
+            >
+              Interviewer follow-up
+            </button>
           </div>
         </section>
 
@@ -517,14 +615,33 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
         </span>
         <span>•</span>
         <span>
-          {settings.llmModelId || 'no model'} via {settings.llmProviderId}
+          {state.metrics?.usedBackup ? (
+            <span data-testid="backup-used">
+              {state.metrics.llmModelId} via {state.metrics.llmProviderId} (backup — primary failed)
+            </span>
+          ) : (
+            <>
+              {settings.llmModelId || 'no model'} via {settings.llmProviderId}
+            </>
+          )}
         </span>
         {state.metrics && (
           <>
             <span>•</span>
             <span>{(state.metrics.totalMs / 1000).toFixed(1)} s total</span>
-            {state.metrics.transcribeMs !== undefined && state.metrics.transcribeMs > 0 && (
-              <span>({(state.metrics.transcribeMs / 1000).toFixed(1)} s transcribe)</span>
+            {state.metrics.sttSpeculative ? (
+              <span data-testid="stt-speculative">
+                (transcribed during the pause
+                {state.metrics.transcribeMs !== undefined && state.metrics.transcribeMs > 100
+                  ? `, ${(state.metrics.transcribeMs / 1000).toFixed(1)} s extra`
+                  : ''}
+                )
+              </span>
+            ) : (
+              state.metrics.transcribeMs !== undefined &&
+              state.metrics.transcribeMs > 0 && (
+                <span>({(state.metrics.transcribeMs / 1000).toFixed(1)} s transcribe)</span>
+              )
             )}
             {state.metrics.firstTokenMs !== undefined && (
               <span>({(state.metrics.firstTokenMs / 1000).toFixed(1)} s to first words)</span>

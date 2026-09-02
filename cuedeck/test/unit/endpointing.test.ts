@@ -119,6 +119,7 @@ describe('SilenceEndpointer', () => {
       new SilenceEndpointer({
         minSpeechMs: 500,
         trailingSilenceMs: 400,
+        speculateAfterMs: 200,
         speechRms: 0.01,
         silenceRms: 0.005,
       }),
@@ -129,5 +130,78 @@ describe('SilenceEndpointer', () => {
     );
     expect(fired).not.toBeNull();
     expect(fired!).toBeLessThan(1_600);
+  });
+});
+
+/** Like `run`, but records every non-'none' signal with its elapsed time. */
+function runDetailed(
+  endpointer: SilenceEndpointer,
+  phases: Array<{ ms: number; rms: number }>,
+  stepMs = 66,
+): Array<{ signal: string; at: number }> {
+  const out: Array<{ signal: string; at: number }> = [];
+  let elapsed = 0;
+  for (const phase of phases) {
+    const end = elapsed + phase.ms;
+    while (elapsed < end) {
+      elapsed += stepMs;
+      const signal = endpointer.pushDetailed(phase.rms, elapsed);
+      if (signal !== 'none') out.push({ signal, at: elapsed });
+    }
+  }
+  return out;
+}
+
+describe('SilenceEndpointer speculation', () => {
+  it('signals speculate at silence onset, well before it fires', () => {
+    const signals = runDetailed(new SilenceEndpointer(), [
+      { ms: 3000, rms: SPEECH },
+      { ms: 3000, rms: SILENCE },
+    ]);
+    expect(signals.map((s) => s.signal)).toEqual(['speculate', 'fire']);
+    const [speculate, fire] = signals;
+    expect(speculate.at - 3000).toBeGreaterThanOrEqual(ENDPOINT_DEFAULTS.speculateAfterMs);
+    expect(speculate.at - 3000).toBeLessThan(ENDPOINT_DEFAULTS.speculateAfterMs + 100);
+    expect(fire.at - speculate.at).toBeGreaterThanOrEqual(
+      ENDPOINT_DEFAULTS.trailingSilenceMs - ENDPOINT_DEFAULTS.speculateAfterMs - 66,
+    );
+  });
+
+  it('never speculates before enough speech has accumulated', () => {
+    const signals = runDetailed(new SilenceEndpointer(), [
+      { ms: 400, rms: SPEECH },
+      { ms: 3000, rms: SILENCE },
+    ]);
+    expect(signals).toEqual([]);
+  });
+
+  it('speculates once per pause and again after speech resumes', () => {
+    const signals = runDetailed(new SilenceEndpointer(), [
+      { ms: 3000, rms: SPEECH },
+      { ms: 1000, rms: SILENCE }, // mid-sentence pause: speculate, no fire
+      { ms: 2000, rms: SPEECH },
+      { ms: 3000, rms: SILENCE }, // real end: speculate again, then fire
+    ]);
+    expect(signals.map((s) => s.signal)).toEqual(['speculate', 'speculate', 'fire']);
+  });
+
+  it('push() still reports only the fire moment', () => {
+    const endpointer = new SilenceEndpointer();
+    const firedAt = run(endpointer, [
+      { ms: 3000, rms: SPEECH },
+      { ms: 3000, rms: SILENCE },
+    ]);
+    expect(firedAt).not.toBeNull();
+    expect(firedAt! - 3000).toBeGreaterThanOrEqual(ENDPOINT_DEFAULTS.trailingSilenceMs);
+  });
+
+  it('is silent after it has fired', () => {
+    const endpointer = new SilenceEndpointer();
+    runDetailed(endpointer, [
+      { ms: 3000, rms: SPEECH },
+      { ms: 3000, rms: SILENCE },
+    ]);
+    expect(endpointer.pushDetailed(SILENCE, 10_000)).toBe('none');
+    expect(endpointer.pushDetailed(SPEECH, 10_066)).toBe('none');
   });
 });

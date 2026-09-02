@@ -131,22 +131,41 @@ export interface AnswerDelta {
   sequence: number;
 }
 
+/** One earlier question/answer pair from the current conversation. */
+export interface ConversationExchange {
+  transcript: string;
+  answer: string;
+}
+
 /** Stage timings for a completed session. All durations in milliseconds. */
 export interface SessionMetrics {
   encodeMs?: number;
+  /** Time the submit path waited on speech-to-text. Near zero when the
+   *  speculative pass started during the pause had already finished. */
   transcribeMs?: number;
+  /** True when the transcript came from the speculative pass started at
+   *  silence onset, i.e. transcription overlapped the trailing-silence wait. */
+  sttSpeculative?: boolean;
   firstTokenMs?: number;
   totalMs: number;
   sttProviderId?: string;
   sttModelId?: string;
+  /** Provider/model that produced the answer — the backup when `usedBackup`. */
   llmProviderId?: string;
   llmModelId?: string;
+  /** The primary response model failed before its first token and the
+   *  user-configured backup answered instead. */
+  usedBackup?: boolean;
 }
 
 /** Push events emitted main→renderer over the session channel. */
 export type SessionEvent =
   | { type: 'state'; sessionId: string; state: SessionState }
   | { type: 'transcript'; sessionId: string; text: string; language?: string }
+  /** An interviewer follow-up question generated from the conversation so far. */
+  | { type: 'follow-up'; sessionId: string; text: string }
+  /** How many exchanges the coordinator now remembers for context. */
+  | { type: 'conversation'; sessionId: string; exchanges: number }
   | { type: 'answer-delta'; sessionId: string; sequence: number; text: string }
   | { type: 'answer-complete'; sessionId: string; text: string; metrics: SessionMetrics }
   | { type: 'progress'; sessionId: string; stage: string; value?: number }
@@ -209,6 +228,18 @@ export interface PublicSettings {
   maxClipSeconds: number;
   /** Stop and submit automatically when the speaker pauses (endpointing). */
   autoStopOnSilence: boolean;
+  /** Trailing silence (ms) the endpointer waits for before auto-submitting. */
+  trailingSilenceMs: number;
+  /** Send the last few exchanges with each request so follow-ups make sense. */
+  conversationMemory: boolean;
+  /**
+   * Explicit, disclosed backup response model used only when the primary
+   * fails before its first token (rate limit, outage, timeout). Empty = none.
+   * Never chosen silently: the user picks it and the status rail says when
+   * it answered.
+   */
+  llmBackupProviderId: string;
+  llmBackupModelId: string;
   activeProfileId?: string;
   ollamaBaseUrl: string;
   /** Opt-in: let OpenRouter use paid models, billed to the user's own credits. */
@@ -234,6 +265,11 @@ export interface SessionOptions {
   answerMode: AnswerMode;
   targetSeconds: TargetSeconds;
   language?: string;
+  sessionNotes?: string;
+}
+
+/** Options for generating an interviewer follow-up question. */
+export interface FollowUpOptions {
   sessionNotes?: string;
 }
 

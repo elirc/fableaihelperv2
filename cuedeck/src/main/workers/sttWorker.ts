@@ -7,6 +7,8 @@
  * this process and respawns it, which also frees model memory.
  */
 
+import { TARGET_SAMPLE_RATE } from '../../shared/constants';
+
 interface LoadMessage {
   type: 'load';
   modelId: string;
@@ -34,9 +36,22 @@ const parentPort = process.parentPort;
 
 let transcriber: Transcriber | null = null;
 let loading: Promise<void> | null = null;
+/** Inferences run one at a time: two concurrent ONNX runs on one CPU just
+ *  make each other slower, and the manager relies on FIFO completion. */
+let inferenceQueue: Promise<unknown> = Promise.resolve();
 
 function post(message: unknown): void {
   parentPort.postMessage(message);
+}
+
+function inferenceOptions(language?: string): Record<string, unknown> {
+  const options: Record<string, unknown> = {
+    chunk_length_s: 30,
+    stride_length_s: 5,
+    return_timestamps: true,
+  };
+  if (language && language !== 'auto') options.language = language;
+  return options;
 }
 
 async function loadModel(modelId: string, cacheDir: string): Promise<void> {
@@ -63,7 +78,50 @@ async function loadModel(modelId: string, cacheDir: string): Promise<void> {
       });
     },
   });
-  transcriber = pipe as unknown as Transcriber;
+  const loaded = pipe as unknown as Transcriber;
+  // ONNX Runtime plans and compiles kernels on the first run, so the first
+  // real inference is noticeably slower than steady state even with the
+  // weights resident. One second of silence takes that hit here, while the
+  // clip is still being recorded, instead of inside "Transcribing…".
+  try {
+    await loaded(new Float32Array(TARGET_SAMPLE_RATE), inferenceOptions());
+  } catch {
+    // A failed warm run is not a failed load; the real request reports.
+  }
+  transcriber = loaded;
+}
+
+function transcribe(msg: TranscribeMessage): Promise<void> {
+  const run = inferenceQueue.then(
+    () => transcribeNow(msg),
+    () => transcribeNow(msg),
+  );
+  inferenceQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function transcribeNow(msg: TranscribeMessage): Promise<void> {
+  try {
+    if (loading) await loading;
+    if (!transcriber) throw new Error('model not loaded');
+    const result = await transcriber(msg.audio, inferenceOptions(msg.language));
+    post({
+      type: 'transcript',
+      id: msg.id,
+      text: result.text ?? '',
+      segments: (result.chunks ?? []).map((c) => ({
+        startMs: Math.round((c.timestamp[0] ?? 0) * 1000),
+        endMs: Math.round((c.timestamp[1] ?? c.timestamp[0] ?? 0) * 1000),
+        text: c.text,
+      })),
+    });
+  } catch (err) {
+    post({
+      type: 'transcribe-error',
+      id: msg.id,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 parentPort.on('message', (event: { data: InMessage }) => {
@@ -77,35 +135,7 @@ parentPort.on('message', (event: { data: InMessage }) => {
     return;
   }
   if (msg.type === 'transcribe') {
-    void (async () => {
-      try {
-        if (loading) await loading;
-        if (!transcriber) throw new Error('model not loaded');
-        const options: Record<string, unknown> = {
-          chunk_length_s: 30,
-          stride_length_s: 5,
-          return_timestamps: true,
-        };
-        if (msg.language && msg.language !== 'auto') options.language = msg.language;
-        const result = await transcriber(msg.audio, options);
-        post({
-          type: 'transcript',
-          id: msg.id,
-          text: result.text ?? '',
-          segments: (result.chunks ?? []).map((c) => ({
-            startMs: Math.round((c.timestamp[0] ?? 0) * 1000),
-            endMs: Math.round((c.timestamp[1] ?? c.timestamp[0] ?? 0) * 1000),
-            text: c.text,
-          })),
-        });
-      } catch (err) {
-        post({
-          type: 'transcribe-error',
-          id: msg.id,
-          detail: err instanceof Error ? err.message : String(err),
-        });
-      }
-    })();
+    void transcribe(msg);
   }
 });
 

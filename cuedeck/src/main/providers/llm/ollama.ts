@@ -4,8 +4,8 @@ import { OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, TIMEOUTS } from '../../../shared/con
 import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { NdjsonParser } from '../../../shared/streaming';
-import { allowlistedFetch, discardBody, isLoopbackHost } from '../../security/http';
-import { bodyChunks, type AnswerRequest, type LlmProvider } from '../contracts';
+import { allowlistedFetch, discardBody } from '../../security/http';
+import { bodyChunks, type AnswerRequest, type LlmProvider, type WarmupPrefix } from '../contracts';
 
 const tagsSchema = z.object({
   models: z.array(z.object({ name: z.string(), size: z.number().optional() })).default([]),
@@ -16,6 +16,19 @@ const chatChunkSchema = z.object({
   done: z.boolean().default(false),
   error: z.string().optional(),
 });
+
+/**
+ * Options that decide how Ollama loads the model. Shared by warmup and
+ * generate so both address the same resident instance.
+ */
+function runnerOptions(): { num_ctx: number } {
+  return {
+    // Many Ollama models default to a 2-4k context; a long profile plus
+    // transcript would overflow it and Ollama drops the oldest tokens first
+    // — i.e. the system prompt — without any error.
+    num_ctx: OLLAMA_NUM_CTX,
+  };
+}
 
 /**
  * Local LLM via the Ollama HTTP API (spec §12.2). Loopback by default;
@@ -72,15 +85,41 @@ export class OllamaProvider implements LlmProvider {
   }
 
   /**
-   * Preload the model while transcription runs: /api/chat with an empty
-   * messages array loads the model into memory and returns immediately
-   * (Ollama FAQ), turning a multi-second cold start into a no-op later.
+   * Preload the model while the clip is still being recorded. Without a
+   * prefix, /api/chat with an empty messages array just loads the weights
+   * (Ollama FAQ). With one, a single-token generation over the real system
+   * prompt and profile fills the prompt cache: Ollama reuses the KV cache
+   * for a matching prompt prefix, so the real request's prompt evaluation
+   * — the visible part of first-token latency on CPU — starts at the
+   * transcript instead of token zero.
+   *
+   * The runner options must match `generate` exactly: Ollama reloads the
+   * model whenever `num_ctx` (or any runner option) differs from the
+   * resident instance, which would turn the warmup into a second cold start.
    */
-  async warmup(modelId: string, signal: AbortSignal): Promise<void> {
+  async warmup(modelId: string, signal: AbortSignal, prefix?: WarmupPrefix): Promise<void> {
+    const body = prefix
+      ? {
+          model: modelId,
+          stream: false,
+          think: false,
+          keep_alive: OLLAMA_KEEP_ALIVE,
+          options: { ...runnerOptions(), num_predict: 1 },
+          messages: [
+            { role: 'system', content: prefix.system },
+            { role: 'user', content: prefix.user },
+          ],
+        }
+      : {
+          model: modelId,
+          messages: [],
+          keep_alive: OLLAMA_KEEP_ALIVE,
+          options: runnerOptions(),
+        };
     const res = await allowlistedFetch(`${await this.base()}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: modelId, messages: [], keep_alive: OLLAMA_KEEP_ALIVE }),
+      body: JSON.stringify(body),
       signal,
       timeoutMs: TIMEOUTS.warmup,
     });
@@ -89,9 +128,6 @@ export class OllamaProvider implements LlmProvider {
 
   async *generate(input: AnswerRequest): AsyncIterable<AnswerDelta> {
     const base = await this.base();
-    if (!isLoopbackHost(new URL(base).hostname)) {
-      // Non-loopback hosts are configured explicitly; still never silent.
-    }
     let res: Response;
     try {
       res = await allowlistedFetch(`${base}/api/chat`, {
@@ -105,12 +141,9 @@ export class OllamaProvider implements LlmProvider {
           // first-token latency on consecutive answers otherwise.
           keep_alive: OLLAMA_KEEP_ALIVE,
           options: {
+            ...runnerOptions(),
             num_predict: input.maxTokens ?? 700,
             temperature: input.temperature ?? 0.6,
-            // Many Ollama models default to a 2-4k context; a long profile
-            // plus transcript would overflow it and Ollama drops the oldest
-            // tokens first — i.e. the system prompt — without any error.
-            num_ctx: OLLAMA_NUM_CTX,
           },
           messages: [
             { role: 'system', content: input.system },

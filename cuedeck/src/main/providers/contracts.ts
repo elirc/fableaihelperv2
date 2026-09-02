@@ -12,6 +12,23 @@ export interface TranscribeInput {
   language?: string;
   modelId: string;
   signal: AbortSignal;
+  /**
+   * The same audio already decoded to 16 kHz mono float PCM, when the
+   * caller has it. Local adapters use it directly instead of decoding the
+   * WAV a second time; cloud adapters ignore it.
+   */
+  samples?: Float32Array;
+}
+
+/**
+ * The stable leading part of the next real request (system prompt plus
+ * profile blocks). A local model can evaluate it ahead of time so the real
+ * request's prompt processing starts at the transcript instead of token
+ * zero; cloud adapters ignore it.
+ */
+export interface WarmupPrefix {
+  system: string;
+  user: string;
 }
 
 export interface SttProvider {
@@ -45,12 +62,13 @@ export interface LlmProvider {
   listModels(signal: AbortSignal): Promise<ModelSummary[]>;
   generate(input: AnswerRequest): AsyncIterable<AnswerDelta>;
   /**
-   * Best-effort preparation fired while transcription is still running so
-   * the first answer token arrives sooner: local providers load the model
-   * into memory, cloud providers open a keep-alive TLS connection. Must be
-   * cheap, idempotent, and safe to fail — the coordinator ignores errors.
+   * Best-effort preparation fired when capture is armed and again while
+   * transcription runs, so the first answer token arrives sooner: local
+   * providers load the model and, given `prefix`, pre-fill their prompt
+   * cache with it; cloud providers open a keep-alive TLS connection. Must
+   * be idempotent and safe to fail — the coordinator ignores errors.
    */
-  warmup?(modelId: string, signal: AbortSignal): Promise<void>;
+  warmup?(modelId: string, signal: AbortSignal, prefix?: WarmupPrefix): Promise<void>;
 }
 
 /**

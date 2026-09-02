@@ -6,6 +6,7 @@ import {
   diagnosticsExportSchema,
   historyDeleteSchema,
   historyListQuerySchema,
+  modelsCancelDownloadSchema,
   modelsDownloadSchema,
   modelsListSchema,
   openExternalSchema,
@@ -15,7 +16,9 @@ import {
   secretsRemoveSchema,
   secretsSetSchema,
   sessionCancelSchema,
+  sessionFollowUpSchema,
   sessionRegenerateSchema,
+  sessionSpeculateMetaSchema,
   sessionSubmitMetaSchema,
   WAV_MAX_BYTES,
   WAV_MIN_BYTES,
@@ -80,6 +83,20 @@ function secureHandle(channel: string, handler: Handler): void {
 }
 
 const downloadOperations = new Map<string, AbortController>();
+
+/** Bound and view a binary IPC payload as WAV bytes without copying. */
+function wavBytes(wav: unknown): Uint8Array {
+  if (!(wav instanceof ArrayBuffer) && !ArrayBuffer.isView(wav)) {
+    throw new CoachError('UNKNOWN', 'audio payload must be binary');
+  }
+  const bytes =
+    wav instanceof ArrayBuffer
+      ? new Uint8Array(wav)
+      : new Uint8Array(wav.buffer, wav.byteOffset, wav.byteLength);
+  if (bytes.byteLength < WAV_MIN_BYTES) throw new CoachError('AUDIO_TOO_SHORT');
+  if (bytes.byteLength > WAV_MAX_BYTES) throw new CoachError('AUDIO_TOO_LONG');
+  return bytes;
+}
 
 export function registerIpc(services: AppServices): void {
   secureHandle('app:getCapabilities', () => services.capabilities());
@@ -169,8 +186,7 @@ export function registerIpc(services: AppServices): void {
   });
 
   secureHandle('models:cancelDownload', (_event, raw) => {
-    const { operationId } = (raw ?? {}) as { operationId?: string };
-    if (typeof operationId !== 'string') throw new CoachError('UNKNOWN', 'missing operationId');
+    const { operationId } = modelsCancelDownloadSchema.parse(raw);
     downloadOperations.get(operationId)?.abort();
     return true;
   });
@@ -189,16 +205,17 @@ export function registerIpc(services: AppServices): void {
 
   secureHandle('session:submit', (_event, rawMeta, wav) => {
     const meta = sessionSubmitMetaSchema.parse(rawMeta);
-    if (!(wav instanceof ArrayBuffer) && !ArrayBuffer.isView(wav)) {
-      throw new CoachError('UNKNOWN', 'audio payload must be binary');
-    }
-    const bytes =
-      wav instanceof ArrayBuffer
-        ? new Uint8Array(wav)
-        : new Uint8Array(wav.buffer, wav.byteOffset, wav.byteLength);
-    if (bytes.byteLength < WAV_MIN_BYTES) throw new CoachError('AUDIO_TOO_SHORT');
-    if (bytes.byteLength > WAV_MAX_BYTES) throw new CoachError('AUDIO_TOO_LONG');
+    const bytes = wavBytes(wav);
     void services.coordinator.submit(meta.sessionId, bytes, meta.options, meta.encodeMs);
+    return { accepted: true };
+  });
+
+  // Best-effort by design: a rejected snapshot is simply not speculated on,
+  // and the final submit still runs the full pipeline.
+  secureHandle('session:speculate', (_event, rawMeta, wav) => {
+    const meta = sessionSpeculateMetaSchema.parse(rawMeta);
+    const bytes = wavBytes(wav);
+    void services.coordinator.speculate(meta.sessionId, bytes, meta.language);
     return { accepted: true };
   });
 
@@ -206,6 +223,17 @@ export function registerIpc(services: AppServices): void {
     const { sessionId, transcript, options } = sessionRegenerateSchema.parse(raw);
     void services.coordinator.regenerate(sessionId, transcript, options);
     return { accepted: true };
+  });
+
+  secureHandle('session:followUp', (_event, raw) => {
+    const { sessionId, options } = sessionFollowUpSchema.parse(raw);
+    void services.coordinator.followUp(sessionId, options);
+    return { accepted: true };
+  });
+
+  secureHandle('session:clearConversation', () => {
+    services.coordinator.clearConversation();
+    return { cleared: true };
   });
 
   secureHandle('session:cancel', (_event, raw) => {

@@ -175,7 +175,16 @@ async function bootstrap(): Promise<void> {
   coachWindow.on('closed', () => {
     coachWindow = null;
   });
+
+  // First-turn warmup: people open CueDeck right before they need it, so
+  // load the local models now rather than inside the first Listen. Delayed
+  // so the window paints first; a no-op until onboarding is complete.
+  if (initial.onboardingComplete) {
+    setTimeout(() => void coordinator.prewarm(), STARTUP_PREWARM_DELAY_MS).unref?.();
+  }
 }
+
+const STARTUP_PREWARM_DELAY_MS = 1_500;
 
 app.on('second-instance', () => {
   if (coachWindow && !coachWindow.isDestroyed()) {

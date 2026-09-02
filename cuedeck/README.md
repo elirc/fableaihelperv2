@@ -36,6 +36,22 @@ credits — set a spending limit on the key at openrouter.ai/keys), with per-mil
 shown in the model list. Groq and Gemini paid tiers need no app change: the same key simply
 gains higher limits when billing is enabled on the provider's side.
 
+## Recommended setup: cheap and reliable
+
+For realistic mock interviews the practical trade-off is speed and answer quality against zero
+spend. The configuration that works best in practice:
+
+| Role                | Pick                                                               | Why                                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Speech-to-text      | **Groq Whisper** (`whisper-large-v3-turbo`)                        | Far more accurate than the local Tiny/Base models on technical vocabulary, and faster than real time. One free Groq key covers both STT and responses. Local Whisper Small is the offline alternative. |
+| Responses (primary) | **Groq `llama-3.3-70b-versatile`** or **Cerebras `llama-3.3-70b`** | 70B-class answers with sub-second first token on the free tier. Both are materially better than a local 3B–8B model on .NET/JS specifics.                                                              |
+| Responses (backup)  | **The other one of the two above**                                 | Free-tier limits are per provider, so a rate limit on one rarely coincides with the other. Set it under Preferences → Providers → Backup response model.                                               |
+| Offline fallback    | Local Whisper + Ollama (`qwen2.5-coder:7b-instruct` on ≥16 GB)     | Always free, works with no network. Slower and less accurate; keep it configured for travel days.                                                                                                      |
+
+Both cloud providers are free tiers with published limits that can change; the app shows each
+provider's data-use disclosure before it can be enabled. Nothing is ever billed unless you opt
+into paid OpenRouter models explicitly.
+
 ## Prerequisites
 
 | Requirement       | Version / notes                                                                                                                                                                                 |
@@ -82,18 +98,41 @@ response card streams in. Settings live in a separate Preferences window.
 Everything is tuned for one loop: someone asks a question, you get a speakable response fast.
 
 - **Auto-respond on pause** (on by default, toggleable): while listening, the app watches the
-  audio level and stops + submits by itself about 1.6 s after the speaker finishes — no
+  audio level and stops + submits by itself once the speaker has paused for the chosen length
+  (quick 1.0 s / normal 1.6 s / patient 2.4 s, selectable next to the toggle) — no
   reaction-time lag from clicking Stop. Turn it off to control the clip manually.
-- **Low-latency pipeline**: the response model is pre-warmed the moment recording starts (the
-  cold start happens while the other person is still talking), the LLM warms again during
-  transcription, and answers stream token by token. The status rail shows the timing split
+- **Transcription starts during the pause**: about 0.7 s into any pause the app snapshots the
+  clip so far and starts transcribing it in the background. If the speaker turns out to be
+  done, the transcript is already finished (or well under way) by the time auto-respond fires,
+  so the response starts sooner; if they carry on talking, the snapshot is simply discarded and
+  the final clip is transcribed normally. The status rail says "transcribed during the pause"
+  when this paid off. Works with auto-respond off too (the transcript is usually ready when you
+  click Stop).
+- **Low-latency pipeline**: both models are pre-warmed the moment recording starts (and once at
+  app start): the local Whisper model is loaded and its first-run cost paid, and the response
+  model is loaded with the real system prompt + profile already evaluated into its prompt
+  cache, so the cold start and most of the prompt processing happen while the other person is
+  still talking. Answers stream token by token. The status rail shows the timing split
   (transcribe / first words / total) after each response.
 - **Session notes**: a small free-text field (company, role, points to hit) sent with every
   request and used to ground the response, alongside your profile. Cleared per call, never
   stored.
-- **Practice deck**: draw from ~30 built-in interview questions (by category) into the
+- **Conversation context**: the last two question/answer pairs travel with each request, so
+  follow-ups like "and how would you scale that?" are answered in context and consistent with
+  what was already said. The "Heard" card shows how many exchanges are remembered; **Clear**
+  forgets them and starts a new conversation. Toggle in Preferences → General (it costs a few
+  hundred tokens per response).
+- **Practice deck**: draw from ~60 built-in interview questions (by category) into the
   transcript box, answer aloud, then generate a suggested response to compare. Works fully
   offline — it reuses the same respond pipeline.
+- **Interviewer follow-up**: once there is at least one exchange, this button asks the model to
+  play the interviewer and generate the next question from what has been said (probing a claim,
+  a trade-off, a gap). It lands in the "Heard" box like a deck question, so a single drawn
+  question becomes a realistic multi-turn mock interview. One short request (~150 tokens).
+- **Backup response model** (Preferences → Providers): free tiers rate-limit and occasionally go
+  down mid-interview. You can name a second provider/model to be used only when the primary
+  fails before producing anything; the status rail says "(backup — primary failed)" when it
+  answered. It is never chosen silently and needs its own key and accepted disclosure.
 - **Speaking-pace estimate**: each finished answer shows its word count and estimated speaking
   time against your target (15/30/60 s), so you know whether the draft fits before you use it.
 - **Keyboard shortcuts**: `Ctrl+L` listen / stop &amp; respond, `Esc` cancel, `Ctrl+Shift+C`

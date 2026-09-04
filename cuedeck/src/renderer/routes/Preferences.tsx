@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { RECOMMENDED_OLLAMA_MODELS } from '../../shared/catalog';
 import type {
   DiagnosticsReport,
   HistoryItem,
   ModelSummary,
+  PreferencesSection as Section,
   Profile,
   ProviderMeta,
   ProviderProbe,
@@ -15,10 +17,16 @@ interface Props {
   onSettingsChanged: () => Promise<void>;
 }
 
-type Section = 'general' | 'providers' | 'profiles' | 'history' | 'diagnostics' | 'about';
-
-export function Preferences({ settings, onSettingsChanged }: Props): React.JSX.Element {
-  const [section, setSection] = useState<Section>('general');
+export function Preferences({
+  settings,
+  onSettingsChanged,
+  section: requested,
+}: Props & { section?: Section }): React.JSX.Element {
+  const [section, setSection] = useState<Section>(requested ?? 'general');
+  useEffect(() => {
+    // The coach can re-point an already open window (error banner → providers).
+    if (requested) setSection(requested);
+  }, [requested]);
   const sections: Array<[Section, string]> = [
     ['general', 'General'],
     ['providers', 'Providers'],
@@ -172,6 +180,8 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
   const [ollamaUrl, setOllamaUrl] = useState(settings.ollamaBaseUrl);
   const [ollamaConfirm, setOllamaConfirm] = useState(false);
+  /** Provider whose model was already auto-picked, so a manual "" sticks. */
+  const autoPicked = useRef('');
 
   useEffect(() => {
     void window.cuedeck.listProviders().then(setProviders);
@@ -195,10 +205,13 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
     return result;
   };
 
-  const loadModels = async (providerId: string) => {
+  // Stable identities: LocalModelPicker lists its loader as an effect
+  // dependency, so a fresh arrow per render would refetch on every render.
+  const loadModels = useCallback(async (providerId: string) => {
     const list = await window.cuedeck.listModels(providerId).catch(() => []);
     setModels((m) => ({ ...m, [providerId]: list }));
-  };
+  }, []);
+  const loadLocalModels = useCallback(() => void loadModels('local-whisper'), [loadModels]);
 
   const sttProviders = providers.filter((p) => p.kind === 'stt');
   const llmProviders = providers.filter((p) => p.kind === 'llm');
@@ -208,6 +221,20 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
     ...new Set(providers.filter((p) => p.location === 'cloud').map((p) => p.credentialId ?? p.id)),
   ];
   const ollamaIsRemote = !/^https?:\/\/(localhost|127\.|\[::1\])/.test(ollamaUrl);
+  const llmModels = models[settings.llmProviderId] ?? [];
+  const llmNeedsModel = settings.llmProviderId === 'ollama' && settings.llmModelId === '';
+
+  useEffect(() => {
+    // Same rule as the coordinator (and onboarding): Ollama with no model
+    // chosen cannot answer anything, so take the first recommended model
+    // that is installed as soon as the list arrives.
+    if (!llmNeedsModel || llmModels.length === 0) return;
+    if (autoPicked.current === settings.llmProviderId) return;
+    autoPicked.current = settings.llmProviderId;
+    const pick =
+      RECOMMENDED_OLLAMA_MODELS.find((id) => llmModels.some((m) => m.id === id)) ?? llmModels[0].id;
+    void update({ llmModelId: pick });
+  }, [llmModels, llmNeedsModel, settings.llmProviderId]);
 
   const providerStatus = (id: string) => {
     const p = probes[id];
@@ -274,7 +301,7 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
           <LocalModelPicker
             settings={settings}
             models={models['local-whisper']}
-            onLoad={() => void loadModels('local-whisper')}
+            onLoad={loadLocalModels}
             onSettingsChanged={onSettingsChanged}
           />
         )}
@@ -311,6 +338,11 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
             ))}
           </select>
         </label>
+        {llmNeedsModel && (
+          <p className="warn-banner" role="status" data-testid="llm-no-model">
+            No model selected — click Check &amp; list models and choose one.
+          </p>
+        )}
         <div className="row">
           <button
             className="small"
@@ -322,7 +354,7 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
           </button>
           {providerStatus(settings.llmProviderId)}
         </div>
-        {(models[settings.llmProviderId] ?? []).length > 0 && (
+        {llmModels.length > 0 && (
           <label className="field">
             <span>Model</span>
             <select
@@ -330,7 +362,7 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
               onChange={(e) => void update({ llmModelId: e.target.value })}
             >
               <option value="">Choose a model…</option>
-              {(models[settings.llmProviderId] ?? []).map((m) => (
+              {llmModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.displayName}
                 </option>
@@ -457,7 +489,8 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
                 />
                 <span>
                   This is not a local address. Prompts, transcripts, and profile data will leave
-                  this device. I understand.
+                  this device. Only private-network addresses (10.x, 172.16–31.x, 192.168.x, or a
+                  .local name) are accepted; public hosts are refused. I understand.
                 </span>
               </label>
             )}

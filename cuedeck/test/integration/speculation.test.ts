@@ -10,6 +10,7 @@ import type {
 import { SessionCoordinator, type CoordinatorDeps } from '../../src/main/sessions/coordinator';
 import { encodeWav } from '../../src/shared/audio';
 import { PROVIDERS } from '../../src/shared/catalog';
+import { MAX_CLOUD_SPECULATIONS_PER_CLIP } from '../../src/shared/constants';
 import type { AnswerDelta, Profile, SessionEvent } from '../../src/shared/domain';
 import { buildPrompt } from '../../src/shared/prompt';
 
@@ -436,5 +437,37 @@ describe('LLM warmup prefix', () => {
     // Once settled, a later warmup is allowed again (the model may have been evicted).
     await coordinator.prewarm();
     expect(calls).toBe(2);
+  });
+});
+
+describe('cloud speculation budget', () => {
+  it('stops speculating after the per-clip cap; the final submit still transcribes', async () => {
+    const h = makeHarness({ location: 'cloud' });
+    for (let i = 1; i <= MAX_CLOUD_SPECULATIONS_PER_CLIP + 2; i++) {
+      await h.coordinator.speculate(SID, wavOf(tone(3 * i), silence(0.7)), 'auto');
+      await tick();
+    }
+    expect(h.sttCalls).toHaveLength(MAX_CLOUD_SPECULATIONS_PER_CLIP);
+    await h.coordinator.submit(SID, wavOf(tone(20), silence(1.6)), OPTIONS, 5);
+    expect(h.sttCalls).toHaveLength(MAX_CLOUD_SPECULATIONS_PER_CLIP + 1);
+    expect(completed(h.events)).toBeTruthy();
+  });
+
+  it('resets the budget for a new session and never meters local passes', async () => {
+    const cloud = makeHarness({ location: 'cloud' });
+    for (let i = 1; i <= MAX_CLOUD_SPECULATIONS_PER_CLIP; i++) {
+      await cloud.coordinator.speculate(SID, wavOf(tone(3 * i), silence(0.7)));
+      await tick();
+    }
+    await cloud.coordinator.speculate(SID2, SNAPSHOT);
+    await tick();
+    expect(cloud.sttCalls).toHaveLength(MAX_CLOUD_SPECULATIONS_PER_CLIP + 1);
+
+    const local = makeHarness({ location: 'local' });
+    for (let i = 1; i <= MAX_CLOUD_SPECULATIONS_PER_CLIP + 2; i++) {
+      await local.coordinator.speculate(SID, wavOf(tone(3 * i), silence(0.7)));
+      await tick();
+    }
+    expect(local.sttCalls).toHaveLength(MAX_CLOUD_SPECULATIONS_PER_CLIP + 2);
   });
 });

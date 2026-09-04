@@ -159,6 +159,31 @@ test.describe('coach workflow', () => {
     }
   });
 
+  test('a session with no model selected picks an installed one and answers', async () => {
+    // The first-use case: onboarding finished while Ollama had no models,
+    // and one was pulled afterwards.
+    const ollama = await startFakeOllama({
+      deltas: ['Resolved ', 'and answered.'],
+      models: ['qwen2.5:3b-instruct'],
+    });
+    const { app } = await launchApp({
+      seedSettings: { ...READY_SETTINGS, llmModelId: '', ollamaBaseUrl: ollama.baseUrl },
+    });
+    try {
+      const page = await app.firstWindow();
+      await page.getByTestId('transcript-input').fill('Tell me about your background.');
+      await page.getByTestId('regenerate-button').click();
+      await expect(page.getByTestId('answer-text')).toContainText('Resolved and answered.', {
+        timeout: 15_000,
+      });
+      // The rail follows the resolved model, not the empty setting.
+      await expect(page.getByTestId('status-rail')).toContainText('qwen2.5:3b-instruct');
+    } finally {
+      await app.close();
+      await ollama.close();
+    }
+  });
+
   test('cancel stops a slow generation and suppresses late deltas', async () => {
     const ollama = await startFakeOllama({
       deltas: Array.from({ length: 40 }, (_, i) => `chunk${i} `),

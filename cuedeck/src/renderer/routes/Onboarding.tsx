@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ModelSummary, ProviderProbe, PublicSettings } from '../../shared/domain';
+import { CLOUD_MODELS, RECOMMENDED_OLLAMA_MODELS } from '../../shared/catalog';
 import { ClipRecorder } from '../audio/recorder';
 
 interface Props {
@@ -81,6 +82,7 @@ export function Onboarding({ settings, onSettingsChanged }: Props): React.JSX.El
           <LocalSetupStep
             settings={settings}
             onSettingsChanged={onSettingsChanged}
+            onBack={() => setStep('mode')}
             onNext={() => setStep('audio-test')}
           />
         )}
@@ -88,14 +90,22 @@ export function Onboarding({ settings, onSettingsChanged }: Props): React.JSX.El
         {step === 'cloud-setup' && (
           <CloudSetupStep
             onSettingsChanged={onSettingsChanged}
-            onNext={() => setStep('audio-test')}
+            onBack={() => setStep('mode')}
+            // OpenRouter (and a skipped key check) keep local speech-to-text,
+            // whose Whisper model must be installed before the first Listen.
+            onNext={() =>
+              setStep(settings.sttProviderId === 'local-whisper' ? 'local-setup' : 'audio-test')
+            }
           />
         )}
 
-        {step === 'audio-test' && <AudioTestStep onNext={() => setStep('profile')} />}
+        {step === 'audio-test' && (
+          <AudioTestStep onBack={() => setStep('mode')} onNext={() => setStep('profile')} />
+        )}
 
         {step === 'profile' && (
           <ProfileStep
+            onBack={() => setStep('mode')}
             onNext={async () => {
               await window.cuedeck.updatePublicSettings({ onboardingComplete: true });
               await onSettingsChanged();
@@ -143,17 +153,29 @@ function ModeStep({
   );
 }
 
+/** Every step after the mode choice can return to it, so no check is a dead end. */
+function BackButton({ onBack }: { onBack: () => void }): React.JSX.Element {
+  return (
+    <button className="small" onClick={onBack} data-testid="onboarding-back">
+      ← Back
+    </button>
+  );
+}
+
 function LocalSetupStep({
   settings,
   onSettingsChanged,
+  onBack,
   onNext,
 }: {
   settings: PublicSettings;
   onSettingsChanged: () => Promise<void>;
+  onBack: () => void;
   onNext: () => void;
 }): React.JSX.Element {
   const [sttProbe, setSttProbe] = useState<ProviderProbe | null>(null);
   const [ollamaProbe, setOllamaProbe] = useState<ProviderProbe | null>(null);
+  const autoPicked = useRef(false);
   const [downloadState, setDownloadState] = useState<{
     operationId: string;
     value?: number;
@@ -198,10 +220,26 @@ function LocalSetupStep({
   const model = sttProbe?.models?.find((m: ModelSummary) => m.id === settings.sttModelId);
   const sttReady = sttProbe?.status === 'ready';
   const ollamaReady = ollamaProbe?.status === 'ready';
+  // The OpenRouter path keeps local speech-to-text but not Ollama, so only
+  // the model download applies there.
+  const usesOllama = settings.llmProviderId === 'ollama';
+
+  useEffect(() => {
+    // Ollama ready with no model chosen would let Continue through into a
+    // coach that cannot respond; pick one (a recommended model if installed).
+    const installed = ollamaProbe?.models;
+    if (!usesOllama || autoPicked.current || settings.llmModelId !== '' || !installed?.length)
+      return;
+    autoPicked.current = true;
+    const pick =
+      RECOMMENDED_OLLAMA_MODELS.find((id) => installed.some((m) => m.id === id)) ?? installed[0].id;
+    void window.cuedeck.updatePublicSettings({ llmModelId: pick }).then(() => onSettingsChanged());
+  }, [ollamaProbe, settings.llmModelId, usesOllama]);
 
   return (
     <>
-      <h1>Set up local mode</h1>
+      <BackButton onBack={onBack} />
+      <h1>{usesOllama ? 'Set up local mode' : 'Set up local speech-to-text'}</h1>
       <section className="card">
         <h2>1. Speech-to-text model</h2>
         <p>
@@ -236,49 +274,56 @@ function LocalSetupStep({
         )}
         {downloadError && <p className="error-banner">{downloadError}</p>}
       </section>
-      <section className="card">
-        <h2>2. Local response model (Ollama)</h2>
-        {ollamaReady ? (
-          <>
-            <p role="status">
-              ✓ Ollama is running with {ollamaProbe?.models?.length ?? 0} model(s).
-            </p>
-            <label className="field">
-              <span>Response model</span>
-              <select
-                value={settings.llmModelId}
-                onChange={async (e) => {
-                  await window.cuedeck.updatePublicSettings({ llmModelId: e.target.value });
-                  await onSettingsChanged();
-                }}
-              >
-                <option value="">Choose a model…</option>
-                {ollamaProbe?.models?.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.displayName}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </>
-        ) : (
-          <>
-            <p>
-              {ollamaProbe?.status === 'missing-model'
-                ? 'Ollama is running but has no models. Install one, e.g. "ollama pull qwen2.5:3b-instruct".'
-                : 'Ollama was not detected. Install it, then start it — CueDeck talks to it only on this computer (localhost).'}
-            </p>
-            <div className="row">
-              <button
-                onClick={() => void window.cuedeck.openExternal('https://ollama.com/download')}
-              >
-                Get Ollama
-              </button>
-              <button onClick={() => void probeAll()}>Check again</button>
-            </div>
-          </>
-        )}
-      </section>
+      {usesOllama && (
+        <section className="card">
+          <h2>2. Local response model (Ollama)</h2>
+          {ollamaReady ? (
+            <>
+              <p role="status">
+                ✓ Ollama is running with {ollamaProbe?.models?.length ?? 0} model(s).
+              </p>
+              <label className="field">
+                <span>Response model</span>
+                <select
+                  value={settings.llmModelId}
+                  onChange={async (e) => {
+                    await window.cuedeck.updatePublicSettings({ llmModelId: e.target.value });
+                    await onSettingsChanged();
+                  }}
+                >
+                  <option value="">Choose a model…</option>
+                  {ollamaProbe?.models?.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {settings.llmModelId === '' && (
+                <p className="warn-banner" data-testid="ollama-no-model">
+                  No response model is selected — choose one above, or responses stay unavailable.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <p>
+                {ollamaProbe?.status === 'missing-model'
+                  ? 'Ollama is running but has no models. Install one, e.g. "ollama pull qwen2.5:3b-instruct".'
+                  : 'Ollama was not detected. Install it, then start it — CueDeck talks to it only on this computer (localhost).'}
+              </p>
+              <div className="row">
+                <button
+                  onClick={() => void window.cuedeck.openExternal('https://ollama.com/download')}
+                >
+                  Get Ollama
+                </button>
+                <button onClick={() => void probeAll()}>Check again</button>
+              </div>
+            </>
+          )}
+        </section>
+      )}
       <button
         className="primary"
         onClick={onNext}
@@ -287,10 +332,12 @@ function LocalSetupStep({
       >
         Continue
       </button>
-      <p className="warn-banner">
-        You can continue without Ollama — transcription will work and you can copy the transcript —
-        but response generation stays unavailable until a local model server is configured.
-      </p>
+      {usesOllama && (
+        <p className="warn-banner">
+          You can continue without Ollama — transcription will work and you can copy the transcript
+          — but response generation stays unavailable until a local model server is configured.
+        </p>
+      )}
       {!sttReady && (
         <button onClick={onNext} className="small">
           Skip for now
@@ -300,16 +347,45 @@ function LocalSetupStep({
   );
 }
 
+type CloudProvider = 'groq' | 'gemini' | 'openrouter';
+
+/** Provider switch applied only once the saved key has passed its check. */
+const CLOUD_PRESETS: Record<CloudProvider, Partial<PublicSettings>> = {
+  groq: {
+    sttProviderId: 'groq-whisper',
+    sttModelId: CLOUD_MODELS.groqSttModel,
+    llmProviderId: 'groq',
+    llmModelId: CLOUD_MODELS.groqLlmModel,
+  },
+  gemini: {
+    sttProviderId: 'gemini-audio',
+    sttModelId: CLOUD_MODELS.geminiModel,
+    llmProviderId: 'gemini',
+    llmModelId: CLOUD_MODELS.geminiModel,
+  },
+  openrouter: { llmProviderId: 'openrouter', llmModelId: CLOUD_MODELS.openRouterDefaultModel },
+};
+
+function errorMessage(err: unknown): string {
+  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+    return err.message;
+  }
+  return 'The request failed.';
+}
+
 function CloudSetupStep({
   onSettingsChanged,
+  onBack,
   onNext,
 }: {
   onSettingsChanged: () => Promise<void>;
+  onBack: () => void;
   onNext: () => void;
 }): React.JSX.Element {
-  const [provider, setProvider] = useState<'groq' | 'gemini' | 'openrouter'>('groq');
+  const [provider, setProvider] = useState<CloudProvider>('groq');
   const [key, setKey] = useState('');
   const [probe, setProbe] = useState<ProviderProbe | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const disclosures: Record<string, string> = {
@@ -322,38 +398,32 @@ function CloudSetupStep({
 
   const apply = async () => {
     setSaving(true);
+    setProbe(null);
+    setCheckError(null);
     try {
       await window.cuedeck.setSecret(provider, key);
-      if (provider === 'groq') {
-        await window.cuedeck.updatePublicSettings({
-          sttProviderId: 'groq-whisper',
-          sttModelId: 'whisper-large-v3-turbo',
-          llmProviderId: 'groq',
-          llmModelId: 'llama-3.1-8b-instant',
-        });
-      } else if (provider === 'gemini') {
-        await window.cuedeck.updatePublicSettings({
-          sttProviderId: 'gemini-audio',
-          sttModelId: 'gemini-2.5-flash',
-          llmProviderId: 'gemini',
-          llmModelId: 'gemini-2.5-flash',
-        });
-      } else {
-        await window.cuedeck.updatePublicSettings({
-          llmProviderId: 'openrouter',
-          llmModelId: 'openrouter/free',
-        });
-      }
       await onSettingsChanged();
-      const result = await window.cuedeck.probeProvider(provider === 'groq' ? 'groq' : provider);
+      const result = await window.cuedeck.probeProvider(provider);
       setProbe(result);
+      // A failed check leaves the local defaults in place so nothing points
+      // at a key that does not work; the key itself stays saved.
+      if (result.status === 'ready') {
+        await window.cuedeck.updatePublicSettings(CLOUD_PRESETS[provider]);
+        await onSettingsChanged();
+      }
+    } catch (err) {
+      setCheckError(errorMessage(err));
     } finally {
       setSaving(false);
     }
   };
 
+  const ready = probe?.status === 'ready';
+  const checkFailed = checkError !== null || (probe !== null && !ready);
+
   return (
     <>
+      <BackButton onBack={onBack} />
       <h1>Cloud free tier</h1>
       <label className="field">
         <span>Provider</span>
@@ -377,27 +447,58 @@ function CloudSetupStep({
         <button className="primary" onClick={() => void apply()} disabled={!key || saving}>
           Save and test
         </button>
-        <button onClick={onNext} disabled={probe?.status !== 'ready'}>
+        <button onClick={onNext} disabled={!ready} data-testid="cloud-setup-next">
           Continue
         </button>
+        {checkFailed && (
+          <button onClick={onNext} data-testid="cloud-setup-continue-anyway">
+            Continue anyway
+          </button>
+        )}
       </div>
       {probe && (
         <p role="status">
-          {probe.status === 'ready'
+          {ready
             ? '✓ Provider is reachable.'
             : `Provider check: ${probe.status} ${probe.detail ?? ''}`}
+        </p>
+      )}
+      {checkError && (
+        <p className="error-banner" role="alert">
+          {checkError}
+        </p>
+      )}
+      {checkFailed && (
+        <p className="hint">
+          “Continue anyway” keeps the local providers. The key stays saved and can be tested again
+          under Settings → Providers.
         </p>
       )}
     </>
   );
 }
 
-function AudioTestStep({ onNext }: { onNext: () => void }): React.JSX.Element {
+function AudioTestStep({
+  onBack,
+  onNext,
+}: {
+  onBack: () => void;
+  onNext: () => void;
+}): React.JSX.Element {
   const [running, setRunning] = useState(false);
   const [level, setLevel] = useState(0);
   const [result, setResult] = useState<'healthy' | 'silent' | 'failed' | null>(null);
   const recorderRef = useRef<ClipRecorder | null>(null);
   const peakRef = useRef(0);
+
+  useEffect(() => {
+    // Leaving the step mid-test (Back) must not leave a capture running.
+    return () => {
+      const r = recorderRef.current;
+      recorderRef.current = null;
+      if (r) void r.abort();
+    };
+  }, []);
 
   const runTest = async () => {
     setResult(null);
@@ -434,6 +535,7 @@ function AudioTestStep({ onNext }: { onNext: () => void }): React.JSX.Element {
 
   return (
     <>
+      <BackButton onBack={onBack} />
       <h1>Test system audio</h1>
       <p>
         Play any audio on this computer (music, a video), then run a 5-second capture test. The test
@@ -470,9 +572,11 @@ function AudioTestStep({ onNext }: { onNext: () => void }): React.JSX.Element {
 }
 
 function ProfileStep({
+  onBack,
   onNext,
   onSettingsChanged,
 }: {
+  onBack: () => void;
   onNext: () => Promise<void>;
   onSettingsChanged: () => Promise<void>;
 }): React.JSX.Element {
@@ -483,6 +587,7 @@ function ProfileStep({
 
   return (
     <>
+      <BackButton onBack={onBack} />
       <h1>Add your background (optional)</h1>
       <p>
         CueDeck grounds responses in what you provide here — it is instructed never to invent

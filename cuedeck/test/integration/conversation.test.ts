@@ -3,7 +3,7 @@ import { ProviderRegistry } from '../../src/main/providers/registry';
 import type { AnswerRequest, LlmProvider, SttProvider } from '../../src/main/providers/contracts';
 import { SessionCoordinator, type CoordinatorDeps } from '../../src/main/sessions/coordinator';
 import { PROVIDERS } from '../../src/shared/catalog';
-import type { AnswerDelta, SessionEvent } from '../../src/shared/domain';
+import type { AnswerDelta, PublicSettings, SessionEvent } from '../../src/shared/domain';
 import { CoachError } from '../../src/shared/errors';
 import { sineWav } from '../helpers/wav';
 
@@ -25,13 +25,23 @@ interface FakeLlm extends LlmProvider {
 function fakeLlm(
   id: string,
   behaviour: (input: AnswerRequest, call: number) => AsyncIterable<AnswerDelta>,
+  options: { installed?: string[]; location?: 'local' | 'cloud'; listFails?: boolean } = {},
 ): FakeLlm {
   const requests: AnswerRequest[] = [];
   return {
-    meta: { ...PROVIDERS.ollama, id },
+    meta: { ...PROVIDERS.ollama, id, location: options.location ?? 'local' },
     requests,
     probe: async () => ({ providerId: id, status: 'ready' }),
-    listModels: async () => [],
+    listModels: async () => {
+      if (options.listFails)
+        throw new CoachError('LOCAL_PROVIDER_UNREACHABLE', 'nothing listening');
+      return (options.installed ?? []).map((m) => ({
+        id: m,
+        displayName: m,
+        providerId: id,
+        installed: true,
+      }));
+    },
     generate: (input) => {
       requests.push(input);
       return behaviour(input, requests.length);
@@ -60,6 +70,8 @@ function makeHarness(
     backup?: FakeLlm;
     conversationMemory?: boolean;
     transcript?: string;
+    /** Configured response model; '' is the "never chose one" case. */
+    llmModelId?: string;
   } = {},
 ) {
   const registry = new ProviderRegistry();
@@ -78,29 +90,37 @@ function makeHarness(
   registry.registerLlm(primary);
   if (overrides.backup) registry.registerLlm(overrides.backup);
   const events: SessionEvent[] = [];
+  // Mutable, like the real store: a model the coordinator resolves is
+  // written back and read by the next request.
+  const settings = {
+    sttProviderId: 'local-whisper',
+    sttModelId: 'test-model',
+    sttLanguage: 'auto',
+    llmProviderId: primary.meta.id,
+    llmModelId: overrides.llmModelId ?? 'primary-model',
+    llmBackupProviderId: overrides.backup?.meta.id ?? '',
+    llmBackupModelId: overrides.backup ? 'backup-model' : '',
+    conversationMemory: overrides.conversationMemory ?? true,
+    historyEnabled: false,
+    historyRetentionDays: 7,
+    maxClipSeconds: 90,
+    answerMode: 'natural' as const,
+    targetSeconds: 30 as const,
+  };
+  const patches: Partial<PublicSettings>[] = [];
   const deps: CoordinatorDeps = {
     registry,
-    getSettings: async () => ({
-      sttProviderId: 'local-whisper',
-      sttModelId: 'test-model',
-      sttLanguage: 'auto',
-      llmProviderId: primary.meta.id,
-      llmModelId: 'primary-model',
-      llmBackupProviderId: overrides.backup?.meta.id ?? '',
-      llmBackupModelId: overrides.backup ? 'backup-model' : '',
-      conversationMemory: overrides.conversationMemory ?? true,
-      historyEnabled: false,
-      historyRetentionDays: 7,
-      maxClipSeconds: 90,
-      answerMode: 'natural',
-      targetSeconds: 30,
-    }),
+    getSettings: async () => settings,
+    updateSettings: async (patch) => {
+      patches.push(patch);
+      Object.assign(settings, patch);
+    },
     getProfile: async () => null,
     saveHistory: async () => undefined,
     emit: (event) => events.push(event),
     recordError: () => undefined,
   };
-  return { coordinator: new SessionCoordinator(deps), events, primary };
+  return { coordinator: new SessionCoordinator(deps), events, primary, patches, settings };
 }
 
 const userPromptOf = (llm: FakeLlm, index: number) => llm.requests[index].user;
@@ -223,6 +243,85 @@ describe('interviewer follow-up', () => {
   });
 });
 
+/**
+ * Onboarding can finish with no response model chosen (Ollama installed but
+ * empty at the time, the model pulled afterwards). The request must resolve
+ * one instead of asking the provider for the empty string.
+ */
+describe('empty response model', () => {
+  it('answers on the first recommended installed model and writes the choice back', async () => {
+    const primary = fakeLlm('ollama', () => say('Answer.'), {
+      // Deliberately not in preference order: recommended beats first-listed.
+      installed: ['mistral:latest', 'qwen2.5:3b-instruct', 'llama3.2:3b'],
+    });
+    const { coordinator, events, patches, settings } = makeHarness({ primary, llmModelId: '' });
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    expect(primary.requests[0].modelId).toBe('qwen2.5:3b-instruct');
+    expect(patches).toEqual([{ llmModelId: 'qwen2.5:3b-instruct' }]);
+    expect(settings.llmModelId).toBe('qwen2.5:3b-instruct');
+    const done = events.find((e) => e.type === 'answer-complete');
+    expect(done?.type === 'answer-complete' && done.metrics.llmModelId).toBe('qwen2.5:3b-instruct');
+  });
+
+  it('falls back to the first installed model when none is recommended', async () => {
+    const primary = fakeLlm('ollama', () => say('Answer.'), { installed: ['mistral:latest'] });
+    const { coordinator } = makeHarness({ primary, llmModelId: '' });
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    expect(primary.requests[0].modelId).toBe('mistral:latest');
+  });
+
+  it('resolves once and reuses the choice for later requests', async () => {
+    const primary = fakeLlm('ollama', () => say('Answer.'), { installed: ['llama3.2:3b'] });
+    const { coordinator, patches } = makeHarness({ primary, llmModelId: '' });
+    await coordinator.prewarm();
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    await coordinator.regenerate(SID2, 'Q two?', OPTIONS);
+    expect(patches).toHaveLength(1);
+  });
+
+  it('fails with MODEL_NOT_SELECTED when the local server has no models at all', async () => {
+    const primary = fakeLlm('ollama', () => say('Answer.'), { installed: [] });
+    const { coordinator, events, patches } = makeHarness({ primary, llmModelId: '' });
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    const error = events.find((e) => e.type === 'error');
+    expect(error?.type === 'error' && error.error.code).toBe('MODEL_NOT_SELECTED');
+    expect(primary.requests).toHaveLength(0);
+    expect(patches).toHaveLength(0);
+  });
+
+  it('keeps LOCAL_PROVIDER_UNREACHABLE when the local server cannot be listed', async () => {
+    const primary = fakeLlm('ollama', () => say('Answer.'), { listFails: true });
+    const { coordinator, events } = makeHarness({ primary, llmModelId: '' });
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    const error = events.find((e) => e.type === 'error');
+    expect(error?.type === 'error' && error.error.code).toBe('LOCAL_PROVIDER_UNREACHABLE');
+    expect(primary.requests).toHaveLength(0);
+  });
+
+  it('fails with MODEL_NOT_SELECTED for a cloud provider rather than sending an empty model', async () => {
+    const primary = fakeLlm('groq', () => say('Answer.'), {
+      location: 'cloud',
+      installed: ['some-cloud-model'],
+    });
+    const { coordinator, events, patches } = makeHarness({ primary, llmModelId: '' });
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    const error = events.find((e) => e.type === 'error');
+    expect(error?.type === 'error' && error.error.code).toBe('MODEL_NOT_SELECTED');
+    expect(error?.type === 'error' && error.error.retryable).toBe(false);
+    expect(primary.requests).toHaveLength(0);
+    expect(patches).toHaveLength(0);
+  });
+
+  it('resolves the model on the submit path too, before transcribing', async () => {
+    const primary = fakeLlm('ollama', () => say('Answer.'), { installed: ['qwen3:8b'] });
+    const { coordinator, events } = makeHarness({ primary, llmModelId: '' });
+    await coordinator.submit(SID, sineWav(2), OPTIONS, 5);
+    expect(primary.requests[0].modelId).toBe('qwen3:8b');
+    const done = events.find((e) => e.type === 'answer-complete');
+    expect(done?.type === 'answer-complete' && done.metrics.llmModelId).toBe('qwen3:8b');
+  });
+});
+
 describe('backup response model', () => {
   it('answers on the backup when the primary is rate-limited before its first token', async () => {
     const primary = fakeLlm('ollama', () => failWith('PROVIDER_RATE_LIMITED'));
@@ -266,6 +365,36 @@ describe('backup response model', () => {
     await coordinator.regenerate(SID, 'Q?', OPTIONS);
     const error = events.find((e) => e.type === 'error');
     expect(error?.type === 'error' && error.error.code).toBe('PROVIDER_UNAVAILABLE');
+  });
+
+  it('a primary that streams nothing at all engages the backup', async () => {
+    // A 200 whose SSE body carries no text (captive portal, an unrecognised
+    // upstream failure frame) used to end the session with an empty answer.
+    const primary = fakeLlm('ollama', async function* () {
+      /* no deltas */
+    });
+    const backup = fakeLlm('cerebras', () => say('Backup answer.'));
+    const { coordinator, events } = makeHarness({ primary, backup });
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    const done = events.find((e) => e.type === 'answer-complete');
+    expect(done?.type === 'answer-complete' && done.text).toBe('Backup answer.');
+    expect(done?.type === 'answer-complete' && done.metrics.usedBackup).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
+  it('without a backup an empty stream fails the session instead of completing an empty answer', async () => {
+    const primary = fakeLlm('ollama', async function* () {
+      /* no deltas */
+    });
+    const { coordinator, events } = makeHarness({ primary });
+    await coordinator.regenerate(SID, 'Q?', OPTIONS);
+    expect(events.some((e) => e.type === 'answer-complete')).toBe(false);
+    expect(events.some((e) => e.type === 'conversation')).toBe(false);
+    const error = events.find((e) => e.type === 'error');
+    expect(error?.type === 'error' && error.error.code).toBe('PROVIDER_UNAVAILABLE');
+    // Nothing was remembered: the next request carries no empty exchange.
+    await coordinator.regenerate(SID2, 'Next?', OPTIONS);
+    expect(userPromptOf(primary, 1)).not.toContain('<previous_exchanges>');
   });
 
   it('never uses the backup for a cancelled session', async () => {

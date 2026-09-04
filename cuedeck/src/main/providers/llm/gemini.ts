@@ -6,7 +6,7 @@ import { CoachError } from '../../../shared/errors';
 import { SseParser } from '../../../shared/streaming';
 import { allowlistedFetch, discardBody } from '../../security/http';
 import { bodyChunks, type AnswerRequest, type LlmProvider } from '../contracts';
-import { mapHttpStatus } from './openAiCompatible';
+import { mapErrorFrame, mapHttpStatus } from './openAiCompatible';
 
 export const GEMINI_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -20,7 +20,78 @@ const streamChunkSchema = z.object({
       }),
     )
     .default([]),
+  promptFeedback: z.object({ blockReason: z.string().optional() }).optional(),
 });
+
+const errorBodySchema = z.object({
+  error: z.object({
+    message: z.string().optional(),
+    status: z.string().optional(),
+    details: z.array(z.object({ reason: z.string().optional() }).passthrough()).default([]),
+  }),
+});
+
+/**
+ * Gemini reports a revoked or malformed key as HTTP 400 (`API_KEY_INVALID`)
+ * rather than 401, so a 400 has to be read before it can be classified.
+ * Consumes the body of a 400; every other status is left untouched.
+ */
+export async function isGeminiKeyRejection(res: Response): Promise<boolean> {
+  if (res.status === 401 || res.status === 403) return true;
+  if (res.status !== 400) return false;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return false;
+  }
+  const parsed = errorBodySchema.safeParse(body);
+  if (!parsed.success) return false;
+  const { message, details } = parsed.data.error;
+  return details.some((d) => d.reason === 'API_KEY_INVALID') || /api key/i.test(message ?? '');
+}
+
+/** Map a non-OK Gemini response, releasing its body. */
+export async function mapGeminiError(res: Response): Promise<CoachError> {
+  const keyRejected = await isGeminiKeyRejection(res);
+  discardBody(res);
+  if (keyRejected) {
+    return new CoachError('CREDENTIAL_REJECTED', `Gemini rejected the API key (${res.status})`);
+  }
+  return mapHttpStatus(res.status, 'Gemini');
+}
+
+/** Shared probe for the Gemini LLM and audio adapters (same key, same endpoint). */
+export async function probeGemini(options: {
+  providerId: ProviderProbe['providerId'];
+  baseUrl: string;
+  apiKey: string | null;
+  signal: AbortSignal;
+}): Promise<ProviderProbe> {
+  const { providerId, apiKey } = options;
+  if (!apiKey) return { providerId, status: 'missing-credential' };
+  const started = Date.now();
+  try {
+    const res = await allowlistedFetch(`${options.baseUrl}/models/${CLOUD_MODELS.geminiModel}`, {
+      headers: { 'x-goog-api-key': apiKey },
+      signal: options.signal,
+      timeoutMs: TIMEOUTS.probe,
+    });
+    const keyRejected = await isGeminiKeyRejection(res);
+    discardBody(res); // probes only inspect the status line (plus a 400 body)
+    if (keyRejected)
+      return { providerId, status: 'missing-credential', detail: 'API key rejected' };
+    if (res.status === 429) return { providerId, status: 'quota-limited' };
+    if (!res.ok) return { providerId, status: 'unknown-failure', detail: `HTTP ${res.status}` };
+    return { providerId, status: 'ready', latencyMs: Date.now() - started };
+  } catch (err) {
+    return {
+      providerId,
+      status: 'unreachable',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 /**
  * Only 2.5 Flash variants accept `thinkingBudget: 0`; 2.5 Pro enforces a
@@ -39,38 +110,12 @@ export class GeminiLlmProvider implements LlmProvider {
   ) {}
 
   async probe(signal: AbortSignal): Promise<ProviderProbe> {
-    const apiKey = await this.getApiKey();
-    if (!apiKey) return { providerId: this.meta.id, status: 'missing-credential' };
-    const started = Date.now();
-    try {
-      const res = await allowlistedFetch(`${this.baseUrl}/models/${CLOUD_MODELS.geminiModel}`, {
-        headers: { 'x-goog-api-key': apiKey },
-        signal,
-        timeoutMs: TIMEOUTS.probe,
-      });
-      discardBody(res); // probes only inspect the status line
-      if (res.status === 400 || res.status === 401 || res.status === 403) {
-        return {
-          providerId: this.meta.id,
-          status: 'missing-credential',
-          detail: 'API key rejected',
-        };
-      }
-      if (res.status === 429) return { providerId: this.meta.id, status: 'quota-limited' };
-      if (!res.ok)
-        return {
-          providerId: this.meta.id,
-          status: 'unknown-failure',
-          detail: `HTTP ${res.status}`,
-        };
-      return { providerId: this.meta.id, status: 'ready', latencyMs: Date.now() - started };
-    } catch (err) {
-      return {
-        providerId: this.meta.id,
-        status: 'unreachable',
-        detail: err instanceof Error ? err.message : String(err),
-      };
-    }
+    return probeGemini({
+      providerId: this.meta.id,
+      baseUrl: this.baseUrl,
+      apiKey: await this.getApiKey(),
+      signal,
+    });
   }
 
   async listModels(): Promise<ModelSummary[]> {
@@ -120,10 +165,7 @@ export class GeminiLlmProvider implements LlmProvider {
         timeoutMs: TIMEOUTS.llmTotal,
       },
     );
-    if (!res.ok) {
-      discardBody(res);
-      throw mapHttpStatus(res.status, 'Gemini');
-    }
+    if (!res.ok) throw await mapGeminiError(res);
     const parser = new SseParser();
     let sequence = 0;
     const handle = (data: string): AnswerDelta | null => {
@@ -133,8 +175,16 @@ export class GeminiLlmProvider implements LlmProvider {
       } catch {
         return null;
       }
+      const failure = mapErrorFrame(obj, 'Gemini');
+      if (failure) throw failure;
       const parsed = streamChunkSchema.safeParse(obj);
       if (!parsed.success) return null;
+      // A blocked prompt streams no candidates at all; ending silently would
+      // read as an empty answer rather than a refusal.
+      const blockReason = parsed.data.promptFeedback?.blockReason;
+      if (blockReason) {
+        throw new CoachError('PROVIDER_UNAVAILABLE', `Gemini blocked the prompt (${blockReason})`);
+      }
       const text =
         parsed.data.candidates[0]?.content?.parts.map((p) => p.text ?? '').join('') ?? '';
       if (!text) return null;

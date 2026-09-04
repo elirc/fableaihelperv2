@@ -332,6 +332,10 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
+.status-rail .warn {
+  color: var(--warning);
+}
+
 .error-banner {
   border: 1px solid var(--danger);
   background: rgb(255 107 115 / 10%);

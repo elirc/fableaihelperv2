@@ -3,7 +3,7 @@ import type { ProviderMeta } from './domain';
 /**
  * Typed provider catalog. Cloud model IDs live here — never inline in
  * adapters — so a provider-side rename is a one-line release change.
- * Verified against provider documentation on 2026-07-10.
+ * Verified against provider documentation on 2026-09-02.
  */
 
 export const PROVIDERS: Record<string, ProviderMeta> = {
@@ -71,14 +71,14 @@ export const PROVIDERS: Record<string, ProviderMeta> = {
   },
   cerebras: {
     id: 'cerebras',
-    displayName: 'Cerebras (fastest free tier)',
+    displayName: 'Cerebras (fastest free trial)',
     location: 'cloud',
     freePolicy: 'provider-free-tier',
     supportsAbort: true,
     kind: 'llm',
     dataUseUrl: 'https://www.cerebras.ai/privacy',
     disclosure:
-      'Transcripts, your profile, and session notes are sent to Cerebras. Free-tier quotas apply and may change.',
+      'Transcripts, your profile, and session notes are sent to Cerebras. The free trial needs a verified payment method on file (nothing is charged without opting in); quotas apply and may change.',
   },
   openrouter: {
     id: 'openrouter',
@@ -130,14 +130,18 @@ export const LOCAL_STT_MODELS: CatalogModel[] = [
 /** Cloud model IDs, isolated per spec §12. */
 export const CLOUD_MODELS = {
   groqSttModel: 'whisper-large-v3-turbo',
-  /** 70B is the default: 8B-class models fabricate framework specifics on
-   *  technical questions, and Groq's speed keeps 70B well under a second
-   *  to first token. The 8B stays available as the fastest fallback. */
-  groqLlmModel: 'llama-3.3-70b-versatile',
-  groqLlmFastModel: 'llama-3.1-8b-instant',
+  /** Groq retired llama-3.3-70b-versatile / llama-3.1-8b-instant from the
+   *  Free and Developer plans on 2026-08-26 (Enterprise only now) and names
+   *  gpt-oss-120b / gpt-oss-20b as the replacements. 120B is the default:
+   *  small models fabricate framework specifics on technical questions, and
+   *  Groq's speed keeps it well under a second to first token. */
+  groqLlmModel: 'openai/gpt-oss-120b',
+  groqLlmFastModel: 'openai/gpt-oss-20b',
   geminiModel: 'gemini-2.5-flash',
-  cerebrasModel: 'llama-3.3-70b',
-  cerebrasFastModel: 'llama3.1-8b',
+  /** Cerebras' public free-trial catalog is gpt-oss-120b and gemma-4-31b;
+   *  the Llama 3.x endpoints were withdrawn. */
+  cerebrasModel: 'gpt-oss-120b',
+  cerebrasFastModel: 'gemma-4-31b',
   openRouterDefaultModel: 'openrouter/free',
 } as const;
 

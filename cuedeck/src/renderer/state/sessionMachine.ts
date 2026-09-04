@@ -106,7 +106,9 @@ export function coachReducer(state: CoachState, action: CoachAction): CoachState
 
     case 'cancel-confirmed':
       if (action.sessionId !== state.sessionId) return state;
-      return { ...state, phase: 'ready', error: null };
+      // Retire the id so anything still in flight for it (a late delta, a
+      // clip that finished encoding) is dropped rather than resurrected.
+      return { ...state, sessionId: null, phase: 'ready', error: null };
 
     case 'submitted':
       if (action.sessionId !== state.sessionId) return state;

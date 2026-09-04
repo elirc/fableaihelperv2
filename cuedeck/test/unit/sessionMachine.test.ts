@@ -138,6 +138,32 @@ describe('coachReducer', () => {
     expect(state.answer).toBe('');
     state = coachReducer(state, { type: 'cancel-confirmed', sessionId: SID });
     expect(state.phase).toBe('ready');
+    // Confirmation retires the id: a clip that finished encoding after Esc,
+    // or a straggling answer for it, can no longer move the phase.
+    expect(state.sessionId).toBeNull();
+    state = coachReducer(state, { type: 'submitted', sessionId: SID });
+    expect(state.phase).toBe('ready');
+    state = coachReducer(state, {
+      type: 'session-event',
+      event: {
+        type: 'answer-complete',
+        sessionId: SID,
+        text: 'late',
+        metrics: { totalMs: 1 },
+      },
+    });
+    expect(state.phase).toBe('ready');
+    expect(state.answer).toBe('');
+  });
+
+  it('cancel-confirmed for a different session leaves the current one alone', () => {
+    const state = run([
+      { type: 'arm', sessionId: SID },
+      { type: 'capture-started' },
+      { type: 'cancel-confirmed', sessionId: OTHER },
+    ]);
+    expect(state.phase).toBe('recording');
+    expect(state.sessionId).toBe(SID);
   });
 
   it('regenerate adopts a new session id and clears the previous answer', () => {

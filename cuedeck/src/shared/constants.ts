@@ -54,9 +54,26 @@ export const OLLAMA_KEEP_ALIVE = '15m';
  *  a full profile, session notes, and a long transcript without truncation. */
 export const OLLAMA_NUM_CTX = 8192;
 
+/**
+ * Extra completion tokens granted to models that reason before answering
+ * (gpt-oss on Groq/Cerebras/OpenRouter): the hidden reasoning counts
+ * against `max_tokens`, so a tight budget such as the interviewer's 160
+ * tokens would otherwise be spent before the visible text starts.
+ */
+export const REASONING_TOKEN_HEADROOM = 256;
+
 /** Default sampling values when a request does not specify its own. */
 export const DEFAULT_TEMPERATURE = 0.6;
 export const DEFAULT_MAX_TOKENS = 1024;
+
+/**
+ * Speculative transcriptions per clip when speech-to-text is a cloud
+ * provider. Each speculative pass uploads the whole clip so far and counts
+ * against the provider's audio-seconds quota, so a long question with many
+ * pauses must not multiply its own length; after this many the final
+ * submit simply transcribes normally. Local passes are unmetered.
+ */
+export const MAX_CLOUD_SPECULATIONS_PER_CLIP = 3;
 
 /** One-use capture grant lifetime (ms). */
 export const CAPTURE_GRANT_TTL_MS = 8_000;

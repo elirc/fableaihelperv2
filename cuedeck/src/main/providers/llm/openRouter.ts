@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CLOUD_MODELS, PROVIDERS } from '../../../shared/catalog';
-import { TIMEOUTS } from '../../../shared/constants';
+import { DEFAULT_MAX_TOKENS, REASONING_TOKEN_HEADROOM, TIMEOUTS } from '../../../shared/constants';
 import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { allowlistedFetch, discardBody } from '../../security/http';
@@ -82,6 +82,22 @@ export function describePaidModels(models: OpenRouterModel[], limit: number): Mo
  * the user has explicitly opted into paid models (billed to their own
  * OpenRouter credits; spend limits are set on the key at openrouter.ai).
  */
+/**
+ * The gpt-oss family reasons at medium effort by default, which delays the
+ * first word by seconds; OpenRouter's unified `reasoning` field lowers it and
+ * keeps the reasoning out of the stream for every upstream host it routes to.
+ */
+export function openRouterRequestExtras(
+  modelId: string,
+  request: Pick<AnswerRequest, 'maxTokens'>,
+): Record<string, unknown> {
+  if (!modelId.includes('gpt-oss-')) return {};
+  return {
+    reasoning: { effort: 'low', exclude: true },
+    max_tokens: (request.maxTokens ?? DEFAULT_MAX_TOKENS) + REASONING_TOKEN_HEADROOM,
+  };
+}
+
 export class OpenRouterProvider extends OpenAiCompatibleLlmProvider {
   private cachedFree: ModelSummary[] | null = null;
   private cachedPaid: ModelSummary[] | null = null;
@@ -97,6 +113,10 @@ export class OpenRouterProvider extends OpenAiCompatibleLlmProvider {
         baseUrl,
         providerName: 'OpenRouter',
         models: [],
+        // `/models` is public, so it cannot validate a key; `/auth/key`
+        // returns the key's own record and 401s when it is bad.
+        probePath: '/auth/key',
+        requestExtras: openRouterRequestExtras,
         extraHeaders: {
           'http-referer': 'https://github.com/cuedeck/cuedeck',
           'x-title': 'CueDeck',

@@ -4,6 +4,8 @@ import { defineConfig } from 'vite';
 // Local STT utility process. `@huggingface/transformers` stays external and
 // is resolved from node_modules at runtime (unpacked native ONNX runtime).
 export default defineConfig({
+  // `public/` holds renderer assets; the lib builds must not copy it too.
+  publicDir: false,
   build: {
     lib: {
       entry: 'src/main/workers/sttWorker.ts',

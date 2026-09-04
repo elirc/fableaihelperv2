@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+defaults:
+  run:
+    working-directory: cuedeck
+
+jobs:
+  check:
+    # Windows only: the app targets Windows (loopback audio, DPAPI) and the
+    # E2E suite drives the real Electron binary.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cuedeck/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:e2e
+      - name: Package (verifies the Forge allowlist and native unpack)
+        run: npm run package
+      - name: Assert native runtime is unpacked
+        shell: pwsh
+        run: |
+          $dll = "out/CueDeck-win32-x64/resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v3/win32/x64/onnxruntime.dll"
+          if (-not (Test-Path $dll)) { throw "onnxruntime.dll missing from app.asar.unpacked" }
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: |
+            cuedeck/test-results
+            cuedeck/playwright-report
+          if-no-files-found: ignore

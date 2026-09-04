@@ -6,6 +6,9 @@ export default defineConfig({
   // Electron apps share a single user-data dir per launch; keep runs serial.
   workers: 1,
   fullyParallel: false,
+  // The first Electron launch after a fresh build can stall past the timeout
+  // on a cold disk cache; one retry separates that from a real regression.
+  retries: 1,
   reporter: [['list']],
   use: {
     trace: 'retain-on-failure',

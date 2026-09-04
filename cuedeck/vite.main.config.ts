@@ -4,6 +4,8 @@ import { defineConfig } from 'vite';
 // Built by the Forge Vite plugin during start/package/make, and directly by
 // `npm run build` (used by the Playwright E2E suite).
 export default defineConfig({
+  // `public/` holds renderer assets; the lib builds must not copy it too.
+  publicDir: false,
   build: {
     lib: {
       entry: 'src/main/main.ts',
@@ -16,7 +18,6 @@ export default defineConfig({
     rollupOptions: {
       external: [
         'electron',
-        'electron-squirrel-startup',
         '@huggingface/transformers',
         ...builtinModules,
         ...builtinModules.map((m) => `node:${m}`),

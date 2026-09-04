@@ -1,5 +1,6 @@
 import { LOCAL_STT_MODELS, PROVIDERS } from '../../../shared/catalog';
 import { TARGET_SAMPLE_RATE, TIMEOUTS } from '../../../shared/constants';
+import { CoachError } from '../../../shared/errors';
 import { decodeWavToFloat32, resample } from '../../../shared/audio';
 import type { ModelSummary, ProviderProbe, TranscriptResult } from '../../../shared/domain';
 import type { ModelProgress, SttWorkerManager } from '../../workers/sttWorkerManager';
@@ -59,13 +60,23 @@ export class LocalWhisperProvider implements SttProvider {
     const audio = input.samples ?? decodeTo16k(input.audio);
     const timeout = AbortSignal.timeout(TIMEOUTS.localStt);
     const signal = AbortSignal.any([input.signal, timeout]);
-    const result = await this.workers.transcribe({
-      audio,
-      modelId: input.modelId,
-      language: input.language,
-      signal,
-      onProgress: this.onProgress,
-    });
+    let result: TranscriptResult;
+    try {
+      result = await this.workers.transcribe({
+        audio,
+        modelId: input.modelId,
+        language: input.language,
+        signal,
+        onProgress: this.onProgress,
+      });
+    } catch (err) {
+      // The worker reports every abort the same way; only the stage timeout
+      // is a provider failure the user must see (a cancel stays silent).
+      if (timeout.aborted && !input.signal.aborted) {
+        throw new CoachError('PROVIDER_TIMEOUT', 'local transcription exceeded the stage timeout');
+      }
+      throw err;
+    }
     return {
       ...result,
       text: result.text.trim(),

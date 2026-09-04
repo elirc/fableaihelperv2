@@ -23,6 +23,12 @@ export interface EndpointerConfig {
    * gap between the two is the time the transcriber gets for free.
    */
   speculateAfterMs: number;
+  /**
+   * Minimum clip growth between two speculations. Each snapshot re-encodes
+   * and re-uploads the whole clip, so a pause that adds little new audio
+   * over the previous snapshot is not worth another pass.
+   */
+  respeculateAfterMs: number;
   /** RMS at or above this counts as speech. */
   speechRms: number;
   /** RMS below this counts as silence; between the two, the previous
@@ -42,12 +48,14 @@ export type EndpointSignal = 'none' | 'speculate' | 'fire';
  * speculating (longer than most mid-sentence breaths, so the snapshot is
  * usually the whole question), and ~1.6 s of trailing silence to fire (long
  * enough for a deliberate pause, short enough to feel instant when the
- * question actually ends).
+ * question actually ends), and ~3 s of new audio before a second snapshot
+ * (with auto-respond off, every pause would otherwise re-upload the clip).
  */
 export const ENDPOINT_DEFAULTS: EndpointerConfig = {
   minSpeechMs: 1_200,
   trailingSilenceMs: 1_600,
   speculateAfterMs: 700,
+  respeculateAfterMs: 3_000,
   speechRms: 0.004,
   silenceRms: 0.002,
 };
@@ -58,6 +66,7 @@ export class SilenceEndpointer {
   private lastElapsedMs = 0;
   private inSpeech = false;
   private speculated = false;
+  private lastSpeculateAt = Number.NEGATIVE_INFINITY;
   private fired = false;
 
   constructor(private readonly config: EndpointerConfig = ENDPOINT_DEFAULTS) {}
@@ -74,7 +83,8 @@ export class SilenceEndpointer {
    * Feed one level sample and learn what to do: 'speculate' once per silence
    * run (after enough speech has accumulated), 'fire' exactly once, 'none'
    * otherwise. A silence run that is interrupted by speech re-arms the
-   * speculation flag, so a second pause produces a second, fresher snapshot.
+   * speculation flag, so a second pause produces a second, fresher snapshot
+   * — provided the clip has grown by `respeculateAfterMs` since the last one.
    */
   pushDetailed(rms: number, elapsedMs: number): EndpointSignal {
     if (this.fired) return 'none';
@@ -99,6 +109,10 @@ export class SilenceEndpointer {
     }
     if (!this.speculated && this.silenceMs >= this.config.speculateAfterMs) {
       this.speculated = true;
+      // Too little new audio since the last snapshot: this pause is skipped
+      // outright rather than re-checked every tick as the silence lengthens.
+      if (elapsedMs - this.lastSpeculateAt < this.config.respeculateAfterMs) return 'none';
+      this.lastSpeculateAt = elapsedMs;
       return 'speculate';
     }
     return 'none';

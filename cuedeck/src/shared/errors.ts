@@ -34,6 +34,12 @@ const TEMPLATES: Record<PublicErrorCode, ErrorTemplate> = {
     retryable: false,
     action: 'download-model',
   },
+  MODEL_NOT_SELECTED: {
+    message:
+      'No response model is selected. Choose one under Settings → Providers → Response model.',
+    retryable: false,
+    action: 'switch-provider',
+  },
   LOCAL_PROVIDER_UNREACHABLE: {
     message: 'The local model server could not be reached. Is Ollama running?',
     retryable: true,

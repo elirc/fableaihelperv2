@@ -1,3 +1,4 @@
+import { SILENCE_RMS_THRESHOLD } from './constants';
 /**
  * Pure audio helpers shared by the renderer (encode) and the main process
  * (validation). No Web Audio or Node APIs — everything here is testable
@@ -187,7 +188,13 @@ export interface SilenceScanOptions {
   windowMs: number;
 }
 
-export const SILENCE_SCAN_DEFAULTS: SilenceScanOptions = { thresholdRms: 0.004, windowMs: 30 };
+/** Same floor as the whole-clip silence gate (`SILENCE_RMS_THRESHOLD`): a
+ *  window the capture path counts as speech must never be trimmed as silence,
+ *  or a softly spoken opening sentence on a quiet loopback feed is cut off. */
+export const SILENCE_SCAN_DEFAULTS: SilenceScanOptions = {
+  thresholdRms: SILENCE_RMS_THRESHOLD,
+  windowMs: 30,
+};
 
 /**
  * True when any analysis window reaches the threshold. Window-based rather

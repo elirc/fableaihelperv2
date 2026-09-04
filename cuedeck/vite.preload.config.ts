@@ -2,6 +2,8 @@ import { builtinModules } from 'node:module';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // `public/` holds renderer assets; the lib builds must not copy it too.
+  publicDir: false,
   build: {
     lib: {
       entry: 'src/preload/preload.ts',

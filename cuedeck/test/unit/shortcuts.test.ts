@@ -78,6 +78,56 @@ describe('resolveShortcut: Escape cancel', () => {
   });
 });
 
+describe('resolveShortcut: event hygiene', () => {
+  it('ignores held-key auto-repeat for every shortcut', () => {
+    expect(resolveShortcut({ ...CTRL_L, repeat: true }, 'ready')).toBeNull();
+    expect(resolveShortcut({ ...CTRL_L, repeat: true }, 'recording')).toBeNull();
+    expect(resolveShortcut({ ...ESCAPE, repeat: true }, 'recording')).toBeNull();
+    expect(resolveShortcut({ ...CTRL_SHIFT_C, repeat: true }, 'complete')).toBeNull();
+  });
+
+  it('turns Escape in an editable text field into leaving the field, not cancelling', () => {
+    const fields = [
+      { tagName: 'TEXTAREA' },
+      { tagName: 'INPUT', type: 'text' },
+      { tagName: 'INPUT' }, // type defaults to text
+      { tagName: 'DIV', isContentEditable: true },
+    ] as unknown as EventTarget[];
+    for (const target of fields) {
+      expect(resolveShortcut({ ...ESCAPE, target }, 'recording')).toBe('leave-field');
+    }
+  });
+
+  it('still cancels from a read-only or disabled field (the transcript box while busy)', () => {
+    const fields = [
+      { tagName: 'TEXTAREA', readOnly: true },
+      { tagName: 'TEXTAREA', disabled: true },
+      { tagName: 'INPUT', type: 'text', readOnly: true },
+    ] as unknown as EventTarget[];
+    for (const target of fields) {
+      expect(resolveShortcut({ ...ESCAPE, target }, 'generating')).toBe('cancel');
+    }
+    expect(resolveShortcut({ ...ESCAPE, target: fields[0] }, 'ready')).toBeNull();
+  });
+
+  it('still cancels from buttons, checkboxes, and the page body', () => {
+    const targets = [
+      { tagName: 'BUTTON' },
+      { tagName: 'INPUT', type: 'checkbox' },
+      { tagName: 'BODY' },
+      null,
+    ] as unknown as Array<EventTarget | null>;
+    for (const target of targets) {
+      expect(resolveShortcut({ ...ESCAPE, target }, 'recording')).toBe('cancel');
+    }
+  });
+
+  it('scopes only Escape to text fields; Ctrl+L still toggles from one', () => {
+    const textarea = { tagName: 'TEXTAREA' } as unknown as EventTarget;
+    expect(resolveShortcut({ ...CTRL_L, target: textarea }, 'recording')).toBe('stop-listening');
+  });
+});
+
 describe('resolveShortcut: copy', () => {
   it('maps Ctrl+Shift+C to copy-answer', () => {
     expect(resolveShortcut(CTRL_SHIFT_C, 'complete')).toBe('copy-answer');

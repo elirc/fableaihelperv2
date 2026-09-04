@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { migrateSettings } from '../../src/main/settings/migrations';
+import { migrateSettings, RETIRED_CLOUD_MODELS } from '../../src/main/settings/migrations';
+import { CLOUD_MODELS } from '../../src/shared/catalog';
 import { PublicSettingsStore } from '../../src/main/settings/publicStore';
 import { SecretVault, type SafeStorageLike } from '../../src/main/settings/secretVault';
 import { applyRetention, HistoryStore } from '../../src/main/storage/historyStore';
@@ -42,6 +43,33 @@ describe('migrateSettings', () => {
   it('drops invalid field values back to defaults', () => {
     const migrated = migrateSettings({ schemaVersion: 1, fontScale: 99 });
     expect(migrated.fontScale).toBe(1);
+  });
+
+  it('remaps retired Groq/Cerebras model ids to the current catalog defaults', () => {
+    const migrated = migrateSettings({
+      schemaVersion: 1,
+      llmProviderId: 'groq',
+      llmModelId: 'llama-3.3-70b-versatile',
+      llmBackupProviderId: 'cerebras',
+      llmBackupModelId: 'llama3.1-8b',
+    });
+    expect(migrated.llmModelId).toBe(CLOUD_MODELS.groqLlmModel);
+    expect(migrated.llmBackupModelId).toBe(CLOUD_MODELS.cerebrasFastModel);
+  });
+
+  it('leaves current model ids and other providers alone', () => {
+    const migrated = migrateSettings({
+      schemaVersion: 1,
+      llmProviderId: 'ollama',
+      llmModelId: 'llama-3.3-70b-versatile',
+      llmBackupProviderId: 'groq',
+      llmBackupModelId: CLOUD_MODELS.groqLlmModel,
+    });
+    expect(migrated.llmModelId).toBe('llama-3.3-70b-versatile');
+    expect(migrated.llmBackupModelId).toBe(CLOUD_MODELS.groqLlmModel);
+    for (const map of Object.values(RETIRED_CLOUD_MODELS)) {
+      for (const target of Object.values(map)) expect(map).not.toHaveProperty(target);
+    }
   });
 
   it('fills the pause-length field added after the file was written', () => {
@@ -93,6 +121,16 @@ describe('SecretVault', () => {
     await vault.remove('groq');
     expect(await vault.has('groq')).toBe(false);
     expect(await vault.getForAdapter('groq')).toBeNull();
+  });
+
+  it('treats a corrupt vault file as empty so a fresh key can still be saved', async () => {
+    await writeFile(path.join(dir, 'secrets.json'), '{"version":1,"entries":{"groq":', 'utf8');
+    const vault = new SecretVault(dir, fakeSafeStorage);
+    expect(await vault.has('groq')).toBe(false);
+    expect(await vault.getForAdapter('groq')).toBeNull();
+    await vault.set('groq', 'gsk_replacement');
+    expect(await vault.getForAdapter('groq')).toBe('gsk_replacement');
+    expect(JSON.parse(await readFile(path.join(dir, 'secrets.json'), 'utf8')).version).toBe(1);
   });
 
   it('refuses to store when OS encryption is unavailable', async () => {

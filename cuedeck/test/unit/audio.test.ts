@@ -11,6 +11,7 @@ import {
   rms,
   trimSilence,
 } from '../../src/shared/audio';
+import { SILENCE_RMS_THRESHOLD } from '../../src/shared/constants';
 import { sineWav, silentWav } from '../helpers/wav';
 
 describe('downmixToMono', () => {
@@ -260,6 +261,18 @@ describe('trimSilence', () => {
     const trimmed = trimSilence(quiet, 16_000);
     expect(trimmed.samples).toBe(quiet);
     expect(trimmed.leadingMs).toBe(0);
+  });
+
+  it('keeps a softly spoken opening that the capture gate already counts as speech', () => {
+    // amplitude 0.004 sine -> RMS ~0.0028: above SILENCE_RMS_THRESHOLD (0.0015)
+    // but below the old 0.004 trim floor that used to cut it off.
+    const soft = tone(2, 0.004);
+    const loud = tone(1);
+    const samples = concat(new Float32Array(16_000), soft, loud);
+    expect(rms(soft)).toBeGreaterThan(SILENCE_RMS_THRESHOLD);
+    const trimmed = trimSilence(samples, 16_000);
+    expect(Math.abs(trimmed.leadingMs - (1000 - 250))).toBeLessThan(60);
+    expect(trimmed.samples.length).toBeGreaterThanOrEqual(soft.length + loud.length);
   });
 
   it('returns a copy, not a view over the original buffer', () => {

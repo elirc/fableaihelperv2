@@ -41,16 +41,30 @@ gains higher limits when billing is enabled on the provider's side.
 For realistic mock interviews the practical trade-off is speed and answer quality against zero
 spend. The configuration that works best in practice:
 
-| Role                | Pick                                                               | Why                                                                                                                                                                                                    |
-| ------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Speech-to-text      | **Groq Whisper** (`whisper-large-v3-turbo`)                        | Far more accurate than the local Tiny/Base models on technical vocabulary, and faster than real time. One free Groq key covers both STT and responses. Local Whisper Small is the offline alternative. |
-| Responses (primary) | **Groq `llama-3.3-70b-versatile`** or **Cerebras `llama-3.3-70b`** | 70B-class answers with sub-second first token on the free tier. Both are materially better than a local 3B–8B model on .NET/JS specifics.                                                              |
-| Responses (backup)  | **The other one of the two above**                                 | Free-tier limits are per provider, so a rate limit on one rarely coincides with the other. Set it under Preferences → Providers → Backup response model.                                               |
-| Offline fallback    | Local Whisper + Ollama (`qwen2.5-coder:7b-instruct` on ≥16 GB)     | Always free, works with no network. Slower and less accurate; keep it configured for travel days.                                                                                                      |
+| Role                | Pick                                                           | Why                                                                                                                                                                                                                                                                                                                      |
+| ------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Speech-to-text      | **Groq Whisper** (`whisper-large-v3-turbo`)                    | Far more accurate than the local Tiny/Base models on technical vocabulary, and faster than real time. One free Groq key covers both STT and responses. Local Whisper Small is the offline alternative.                                                                                                                   |
+| Responses (primary) | **Groq `openai/gpt-oss-120b`** or **Cerebras `gpt-oss-120b`**  | 120B-class answers with sub-second first token on the free tier (the app requests low reasoning effort so the first word is not delayed). Materially better than a local 3B–8B model on .NET/JS specifics. Groq retired its Llama 3.x free models on 2026-08-26; the app remaps a saved Llama ID to these automatically. |
+| Responses (backup)  | **The other one of the two above**                             | Free-tier limits are per provider, so a rate limit on one rarely coincides with the other. Set it under Preferences → Providers → Backup response model.                                                                                                                                                                 |
+| Offline fallback    | Local Whisper + Ollama (`qwen2.5-coder:7b-instruct` on ≥16 GB) | Always free, works with no network. Slower and less accurate; keep it configured for travel days.                                                                                                                                                                                                                        |
 
-Both cloud providers are free tiers with published limits that can change; the app shows each
-provider's data-use disclosure before it can be enabled. Nothing is ever billed unless you opt
-into paid OpenRouter models explicitly.
+Both cloud providers are free tiers with published limits that can change (as of 2026-09-02: Groq
+free plan is 30 requests/min, 1,000/day, 8K tokens/min and 200K tokens/day per gpt-oss model, plus
+7,200 audio-seconds/hour for Whisper; Cerebras free trial is 5 requests/min and 1M tokens/day per
+model). A Groq key needs no card. **Cerebras now requires a verified payment method to activate a
+key** (it grants $5 of trial credit and charges nothing unless you upgrade). Gemini's free tier
+(`gemini-2.5-flash`, ~10 requests/min, no card) and OpenRouter's `openrouter/free` router (20
+requests/min, 50/day without purchased credits) remain the card-free alternatives. The app shows
+each provider's data-use disclosure before it can be enabled. Nothing is ever billed unless you
+opt into paid OpenRouter models explicitly.
+
+## Testing the production build on a real call
+
+[docs/REAL_CALL_TEST_GUIDE.md](docs/REAL_CALL_TEST_GUIDE.md) is the step-by-step checklist for
+the installed build with one free Groq key: install + checksum, first-run setup, a ten-item
+smoke test, what to expect during the call, and what to capture when something fails.
+Build the installer with `npm run release` (writes `out/make/.../CueDeck-Setup.exe` and
+`SHASUMS256.txt`).
 
 ## Prerequisites
 
@@ -247,8 +261,9 @@ dev server running elsewhere, `EADDRINUSE`), stop the other dev server and retry
 
 **Errors mentioning `onnxruntime` or native modules.**
 `@huggingface/transformers` is deliberately kept out of the app bundles and loaded from
-`node_modules` at runtime (its ONNX runtime contains native binaries; packaged builds unpack
-them from the asar archive automatically). If it fails to load in dev, delete `node_modules`
+`node_modules` at runtime (its ONNX runtime contains native binaries). Packaged builds copy
+only that package's production closure into the asar (`ignore` allowlist in `forge.config.ts`)
+and store `onnxruntime-node`, `sharp` and `@img` outside it (`asar.unpack`) so their DLLs load. If it fails to load in dev, delete `node_modules`
 and `package-lock.json`-driven state and reinstall (`Remove-Item -Recurse -Force node_modules;
 npm install`), and make sure you are on x64 Node 22+. No manual `electron-rebuild` step exists
 or is needed in this project.
@@ -304,6 +319,8 @@ explain the Electron-specific pieces as they go:
    provider, adding an IPC channel, adding a renderer route, and where validation lives.
 3. [docs/TESTING.md](docs/TESTING.md) — what each test tier covers and how to decide where a new
    test belongs.
+4. [docs/REVIEW_2026-09-02.md](docs/REVIEW_2026-09-02.md) — the deploy-readiness review: what
+   was broken in the packaged build, the free-tier status, and what is still open.
 
 ## Security & privacy
 

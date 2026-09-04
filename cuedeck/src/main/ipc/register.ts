@@ -1,6 +1,12 @@
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
-import type { AppCapabilities, OperationEvent, SessionEvent } from '../../shared/domain';
+import type {
+  AppCapabilities,
+  OperationEvent,
+  PreferencesSection,
+  PublicSettings,
+  SessionEvent,
+} from '../../shared/domain';
 import {
   captureArmSchema,
   diagnosticsExportSchema,
@@ -10,6 +16,7 @@ import {
   modelsDownloadSchema,
   modelsListSchema,
   openExternalSchema,
+  openPreferencesSchema,
   profileDeleteSchema,
   profileSaveSchema,
   providersProbeSchema,
@@ -48,10 +55,10 @@ export interface AppServices {
   sttWorkers: SttWorkerManager;
   capabilities: () => AppCapabilities;
   broadcast: (
-    channel: 'session:event' | 'operation:event',
-    payload: SessionEvent | OperationEvent,
+    channel: 'session:event' | 'operation:event' | 'settings:changed',
+    payload: SessionEvent | OperationEvent | PublicSettings,
   ) => void;
-  openPreferencesWindow: () => void;
+  openPreferencesWindow: (section?: PreferencesSection) => void;
   applyWindowSettings: () => Promise<void>;
 }
 
@@ -101,8 +108,9 @@ function wavBytes(wav: unknown): Uint8Array {
 export function registerIpc(services: AppServices): void {
   secureHandle('app:getCapabilities', () => services.capabilities());
 
-  secureHandle('app:openPreferences', () => {
-    services.openPreferencesWindow();
+  secureHandle('app:openPreferences', (_event, raw) => {
+    const { section } = openPreferencesSchema.parse(raw ?? {});
+    services.openPreferencesWindow(section);
     return true;
   });
 
@@ -115,9 +123,12 @@ export function registerIpc(services: AppServices): void {
 
   secureHandle('settings:getPublic', () => services.settings.get());
 
+  // Every settings write is broadcast so the coach window follows changes
+  // made in the Preferences window (and vice versa) without a reload.
   secureHandle('settings:updatePublic', async (_event, patch) => {
     const updated = await services.settings.patch(patch);
     await services.applyWindowSettings();
+    services.broadcast('settings:changed', updated);
     return updated;
   });
 
@@ -126,14 +137,16 @@ export function registerIpc(services: AppServices): void {
   secureHandle('secrets:set', async (_event, raw) => {
     const { providerId, value } = secretsSetSchema.parse(raw);
     await services.secrets.set(providerId, value);
-    await services.settings.setCredentialFlag(providerId, true);
+    const updated = await services.settings.setCredentialFlag(providerId, true);
+    services.broadcast('settings:changed', updated);
     return { hasCredential: true };
   });
 
   secureHandle('secrets:remove', async (_event, raw) => {
     const { providerId } = secretsRemoveSchema.parse(raw);
     await services.secrets.remove(providerId);
-    await services.settings.setCredentialFlag(providerId, false);
+    const updated = await services.settings.setCredentialFlag(providerId, false);
+    services.broadcast('settings:changed', updated);
     return { hasCredential: false };
   });
 

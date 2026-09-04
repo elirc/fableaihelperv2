@@ -17,8 +17,11 @@ export interface FakeServer {
   setHandler: (handler: FakeHandler) => void;
 }
 
-/** Loopback HTTP server for provider integration tests. */
-export async function startFakeServer(handler: FakeHandler): Promise<FakeServer> {
+/** Loopback HTTP server for provider integration tests (`host` overrides the bind address). */
+export async function startFakeServer(
+  handler: FakeHandler,
+  host = '127.0.0.1',
+): Promise<FakeServer> {
   let current = handler;
   const requests: FakeRequest[] = [];
   const server = http.createServer((req, res) => {
@@ -35,10 +38,16 @@ export async function startFakeServer(handler: FakeHandler): Promise<FakeServer>
       void current(fake, res);
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, host, () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
   const { port } = server.address() as AddressInfo;
   return {
-    baseUrl: `http://127.0.0.1:${port}`,
+    baseUrl: `http://${host}:${port}`,
     requests,
     close: () =>
       new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),

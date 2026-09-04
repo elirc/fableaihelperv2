@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { PUBLIC_ERROR_CODES } from './domain';
+import { PREFERENCES_SECTIONS, PUBLIC_ERROR_CODES } from './domain';
 
 export const answerModeSchema = z.enum([
   'natural',
@@ -165,6 +165,11 @@ export const profileSaveSchema = profileSchema
 export const profileDeleteSchema = z.object({ id: z.string().min(1) });
 
 export const openExternalSchema = z.object({ url: z.string().url() });
+
+/** Optional tab to open the Preferences window at (e.g. from an error banner). */
+export const openPreferencesSchema = z.object({
+  section: z.enum(PREFERENCES_SECTIONS).optional(),
+});
 
 export const diagnosticsExportSchema = z.object({
   includeTranscripts: z.boolean().default(false),

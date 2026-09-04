@@ -41,7 +41,12 @@ export const READY_SETTINGS = {
 };
 
 /** Minimal fake Ollama server driven from the test process. */
-export async function startFakeOllama(behavior: { deltas: string[]; delayMs?: number }): Promise<{
+export async function startFakeOllama(behavior: {
+  deltas: string[];
+  delayMs?: number;
+  /** Models reported by /api/tags; defaults to the seeded fake-model. */
+  models?: string[];
+}): Promise<{
   baseUrl: string;
   close: () => Promise<void>;
   chatCalls: () => number;
@@ -53,7 +58,8 @@ export async function startFakeOllama(behavior: { deltas: string[]; delayMs?: nu
   const server = http.createServer((req, res) => {
     if (req.url === '/api/tags') {
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ models: [{ name: 'fake-model', size: 1 }] }));
+      const names = behavior.models ?? ['fake-model'];
+      res.end(JSON.stringify({ models: names.map((name) => ({ name, size: 1 })) }));
       return;
     }
     if (req.url === '/api/chat') {

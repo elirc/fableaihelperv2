@@ -2,6 +2,7 @@ import {
   ANSWER_CHAR_CAP,
   BACKUP_FIRST_TOKEN_TIMEOUT_MS,
   CONVERSATION_EXCHANGES,
+  MAX_CLOUD_SPECULATIONS_PER_CLIP,
   MIN_CLIP_SECONDS,
   SILENCE_RMS_THRESHOLD,
   TARGET_SAMPLE_RATE,
@@ -16,11 +17,14 @@ import {
   rms,
   trimSilence,
 } from '../../shared/audio';
+import { RECOMMENDED_OLLAMA_MODELS } from '../../shared/catalog';
 import type {
   AnswerMode,
   ConversationExchange,
   FollowUpOptions,
+  ModelSummary,
   Profile,
+  PublicSettings,
   SessionEvent,
   SessionMetrics,
   SessionOptions,
@@ -64,6 +68,12 @@ export interface CoordinatorDeps {
     llmBackupProviderId?: string;
     llmBackupModelId?: string;
   }>;
+  /**
+   * Persist a settings change the coordinator made on the user's behalf —
+   * currently only the response model it resolved for an empty selection —
+   * and broadcast it, so the status rail and the next run agree with it.
+   */
+  updateSettings?: (patch: Partial<PublicSettings>) => Promise<void>;
   getProfile: (id: string) => Promise<Profile | null>;
   saveHistory: (
     item: {
@@ -160,8 +170,15 @@ export class SessionCoordinator {
   private speculationInflight: SpeculationJob | null = null;
   /** Newest snapshot waiting for the in-flight local job to finish. */
   private speculationPending: PendingSnapshot | null = null;
+  /** Metered (cloud) speculative passes started for the current clip. */
+  private cloudSpeculations: { sessionId: string; count: number } | null = null;
   /** The most recent LLM warmup, so identical back-to-back warmups coalesce. */
   private lastWarmup: { key: string; promise: Promise<void>; settled: boolean } | null = null;
+  /**
+   * Response model picked for an empty selection, kept so warmups and
+   * requests do not re-list the installed models every time.
+   */
+  private resolvedModel: LlmTarget | null = null;
   /**
    * The last few question/answer pairs, oldest first. Sent with every
    * request (when enabled) so follow-up questions are answered in context,
@@ -261,7 +278,10 @@ export class SessionCoordinator {
             targetSeconds: settings.targetSeconds,
           })
         : undefined;
-    jobs.push(this.warmupLlm(settings, AbortSignal.timeout(TIMEOUTS.warmup), prefix));
+    // A model that cannot be resolved yet is not a prewarm failure: the real
+    // request reports it with the proper error.
+    const warmable = await this.withModel(settings).catch(() => null);
+    if (warmable) jobs.push(this.warmupLlm(warmable, AbortSignal.timeout(TIMEOUTS.warmup), prefix));
     await Promise.all(jobs);
   }
 
@@ -287,10 +307,20 @@ export class SessionCoordinator {
     } catch {
       return;
     }
+    if (stt.meta.location !== 'local') {
+      if (this.cloudSpeculations?.sessionId !== sessionId) {
+        this.cloudSpeculations = { sessionId, count: 0 };
+      }
+      if (this.cloudSpeculations.count >= MAX_CLOUD_SPECULATIONS_PER_CLIP) return;
+      this.cloudSpeculations.count += 1;
+    }
     this.speculationPending = null;
     const inflight = this.speculationInflight;
     if (inflight) {
-      if (inflight.sessionId === sessionId && stt.meta.location === 'local') {
+      // A local inference cannot be interrupted without killing the worker
+      // and reloading the model, whichever session it belongs to; queue
+      // behind it. Cloud requests are cheap to abort.
+      if (inflight.local) {
         this.speculationPending = { sessionId, wav, language };
         return;
       }
@@ -389,7 +419,7 @@ export class SessionCoordinator {
     const context = this.begin(sessionId);
     const started = Date.now();
     try {
-      const settings = await this.deps.getSettings();
+      let settings = await this.deps.getSettings();
 
       // Validate audio before any provider call (CAP-10, spec §13.3).
       const info = parseWavHeader(wav);
@@ -403,6 +433,10 @@ export class SessionCoordinator {
       if (rms(samples) < SILENCE_RMS_THRESHOLD) {
         throw new CoachError('CAPTURE_SILENT');
       }
+
+      // Resolve the response model before the STT pass: a clip that cannot
+      // be answered should fail now rather than after transcription.
+      settings = await this.withModel(settings);
 
       this.setState(context, 'transcribing');
       // The profile is needed for the prompt anyway; reading it now (off
@@ -425,6 +459,10 @@ export class SessionCoordinator {
       let speculative = false;
       const job = this.takeSpeculation(sessionId, samples);
       if (job) {
+        // The job now belongs to this session: a cancel must stop its
+        // request too (a cloud pass still spends audio-seconds otherwise).
+        const abortJob = () => job.controller.abort();
+        context.controller.signal.addEventListener('abort', abortJob, { once: true });
         try {
           transcript = await abortable(job.promise, context.controller.signal);
           speculative = true;
@@ -432,6 +470,8 @@ export class SessionCoordinator {
           // A failed or cancelled speculation is not a failed session; fall
           // through to a regular pass (which reports real errors properly).
           if (context.controller.signal.aborted) return;
+        } finally {
+          context.controller.signal.removeEventListener('abort', abortJob);
         }
       }
       if (!transcript) {
@@ -474,7 +514,7 @@ export class SessionCoordinator {
   async regenerate(sessionId: string, transcript: string, options: SessionOptions): Promise<void> {
     const context = this.begin(sessionId);
     try {
-      const settings = await this.deps.getSettings();
+      const settings = await this.withModel(await this.deps.getSettings());
       const profile = await this.loadProfile(settings);
       context.transcript = transcript;
       await this.generate(context, settings, profile, transcript, options, {
@@ -497,10 +537,11 @@ export class SessionCoordinator {
   async followUp(sessionId: string, options: FollowUpOptions): Promise<void> {
     const context = this.begin(sessionId);
     try {
-      const settings = await this.deps.getSettings();
+      let settings = await this.deps.getSettings();
       if (this.conversation.length === 0) {
         throw new CoachError('TRANSCRIPT_EMPTY', 'no exchange to follow up on yet');
       }
+      settings = await this.withModel(settings);
       const profile = await this.loadProfile(settings);
       this.setState(context, 'generating');
       const prompt = buildInterviewerPrompt({
@@ -549,6 +590,58 @@ export class SessionCoordinator {
     if (this.conversation.length > CONVERSATION_EXCHANGES) {
       this.conversation.splice(0, this.conversation.length - CONVERSATION_EXCHANGES);
     }
+  }
+
+  /**
+   * The same settings with a real response model in `llmModelId`. Onboarding
+   * can complete with none selected (Ollama installed but empty, the model
+   * pulled afterwards), and an empty model id only earns an opaque provider
+   * rejection — so resolve it here instead, or say plainly that nothing is
+   * selected.
+   */
+  private async withModel(settings: CoordinatorSettings): Promise<CoordinatorSettings> {
+    if (settings.llmModelId !== '') {
+      // An explicit choice supersedes anything resolved earlier; if the
+      // selection is emptied again later, resolve afresh against what is
+      // installed then rather than replaying a stale pick.
+      this.resolvedModel = null;
+      return settings;
+    }
+    return { ...settings, llmModelId: await this.resolveModelId(settings) };
+  }
+
+  /**
+   * Pick a model for a provider that was left without one: the first
+   * recommended model that is actually installed, else whatever else is.
+   * Only a local provider can be asked what it has; a cloud model id has to
+   * come from the user. The choice is cached for this coordinator and
+   * written back to settings so it survives a restart.
+   */
+  private async resolveModelId(settings: CoordinatorSettings): Promise<string> {
+    const providerId = settings.llmProviderId;
+    if (this.resolvedModel?.providerId === providerId) return this.resolvedModel.modelId;
+    const llm = this.deps.registry.getLlm(providerId);
+    if (llm.meta.location !== 'local') {
+      throw new CoachError('MODEL_NOT_SELECTED', `no model configured for ${providerId}`);
+    }
+    let installed: ModelSummary[];
+    try {
+      installed = await llm.listModels(AbortSignal.timeout(TIMEOUTS.probe));
+    } catch (err) {
+      // A server that cannot be reached is the more actionable failure
+      // (start Ollama), and its own error already says so.
+      if (err instanceof CoachError) throw err;
+      throw new CoachError('LOCAL_PROVIDER_UNREACHABLE', 'could not list the installed models');
+    }
+    const picked =
+      RECOMMENDED_OLLAMA_MODELS.find((id) => installed.some((m) => m.id === id)) ??
+      installed[0]?.id;
+    if (picked === undefined) {
+      throw new CoachError('MODEL_NOT_SELECTED', `${providerId} has no installed models`);
+    }
+    this.resolvedModel = { providerId, modelId: picked };
+    await this.deps.updateSettings?.({ llmModelId: picked }).catch(() => undefined);
+    return picked;
   }
 
   private async loadProfile(settings: CoordinatorSettings): Promise<Profile | null> {
@@ -608,6 +701,9 @@ export class SessionCoordinator {
     prefix?: WarmupPrefix,
   ): Promise<void> {
     try {
+      // Never warm an empty model: the provider rejects it, and the caller
+      // resolves the selection before every real request anyway.
+      if (settings.llmModelId === '') return Promise.resolve();
       const llm = this.deps.registry.getLlm(settings.llmProviderId);
       if (!llm.warmup) return Promise.resolve();
       const key = [
@@ -868,6 +964,14 @@ export class SessionCoordinator {
       throw err;
     } finally {
       clearTimeout(timer);
+    }
+    if (!this.isCurrent(context)) return { firstTokenAt, retired: true };
+    if (firstTokenAt === undefined) {
+      // A stream that ends without a single token (an upstream failure the
+      // adapter could not classify, a captive portal, a blocked prompt) is
+      // a failed generation: it must engage the backup, and never complete
+      // the session with an empty answer.
+      throw new CoachError('PROVIDER_UNAVAILABLE', 'the model returned an empty response');
     }
     return { firstTokenAt, retired: false };
   }

@@ -22,6 +22,33 @@ const chunkSchema = z.object({
     .default([]),
 });
 
+/**
+ * In-band failure frame. OpenRouter and Groq answer 200 and then, when the
+ * upstream model fails mid-stream, send `data: {"error":{...}}` instead of
+ * a chunk; Gemini's SSE stream carries the same shape. Without this the
+ * frame parses as "no choices" and the stream ends as an empty answer.
+ */
+const errorFrameSchema = z.object({
+  error: z.object({
+    message: z.string().optional(),
+    code: z.union([z.number(), z.string()]).optional(),
+    status: z.union([z.number(), z.string()]).optional(),
+  }),
+});
+
+/** Map an in-band error frame the way `mapHttpStatus` maps a status line. */
+export function mapErrorFrame(frame: unknown, providerName: string): CoachError | null {
+  const parsed = errorFrameSchema.safeParse(frame);
+  if (!parsed.success) return null;
+  const { message, code, status } = parsed.data.error;
+  const numeric = [code, status].map(Number).find((n) => Number.isInteger(n) && n >= 400);
+  const mapped = numeric !== undefined ? mapHttpStatus(numeric, providerName) : null;
+  const detail = message
+    ? `${providerName} reported an error mid-stream: ${message}`
+    : (mapped?.public.detail ?? `${providerName} reported an error mid-stream`);
+  return new CoachError(mapped?.public.code ?? 'PROVIDER_UNAVAILABLE', detail);
+}
+
 export function mapHttpStatus(status: number, providerName: string): CoachError {
   if (status === 401 || status === 403) {
     return new CoachError(
@@ -49,6 +76,8 @@ export async function* streamChatCompletions(options: {
   apiKey: string;
   providerName: string;
   extraHeaders?: Record<string, string>;
+  /** Extra JSON fields for the request body (see `requestExtras`). */
+  extraBody?: Record<string, unknown>;
   request: AnswerRequest;
 }): AsyncIterable<AnswerDelta> {
   const { baseUrl, apiKey, providerName, request } = options;
@@ -72,6 +101,7 @@ export async function* streamChatCompletions(options: {
           { role: 'system', content: request.system },
           { role: 'user', content: request.user },
         ],
+        ...options.extraBody,
       }),
       signal: request.signal,
       timeoutMs: TIMEOUTS.llmTotal,
@@ -101,6 +131,8 @@ export async function* streamChatCompletions(options: {
     } catch {
       return null; // tolerate comment/keepalive frames
     }
+    const failure = mapErrorFrame(obj, providerName);
+    if (failure) throw failure;
     const parsed = chunkSchema.safeParse(obj);
     if (!parsed.success) return null;
     const text = parsed.data.choices[0]?.delta?.content ?? '';
@@ -119,6 +151,12 @@ export async function* streamChatCompletions(options: {
   }
 }
 
+/**
+ * Endpoint a probe/warmup hits. It must require the bearer token, or a bad
+ * key probes 'ready' — OpenRouter's `/models` is public, for example.
+ */
+export const DEFAULT_PROBE_PATH = '/models';
+
 export async function probeOpenAiCompatible(options: {
   baseUrl: string;
   apiKey: string | null;
@@ -126,13 +164,16 @@ export async function probeOpenAiCompatible(options: {
   meta: ProviderMeta;
   signal: AbortSignal;
   extraHeaders?: Record<string, string>;
+  /** Authenticated GET path relative to `baseUrl` (default `/models`). */
+  probePath?: string;
 }): Promise<ProviderProbe> {
   if (!options.apiKey) {
     return { providerId: options.meta.id, status: 'missing-credential' };
   }
   const started = Date.now();
   try {
-    const res = await allowlistedFetch(`${options.baseUrl.replace(/\/+$/, '')}/models`, {
+    const path = options.probePath ?? DEFAULT_PROBE_PATH;
+    const res = await allowlistedFetch(`${options.baseUrl.replace(/\/+$/, '')}${path}`, {
       headers: { authorization: `Bearer ${options.apiKey}`, ...options.extraHeaders },
       signal: options.signal,
       timeoutMs: TIMEOUTS.probe,
@@ -181,6 +222,14 @@ export interface OpenAiCompatibleDescriptor {
   extraHeaders?: Record<string, string>;
   /** Throw a CoachError before any request when the model is not permitted. */
   assertModelAllowed?: (modelId: string) => void;
+  /** Authenticated GET used by probe and warmup; see `DEFAULT_PROBE_PATH`. */
+  probePath?: string;
+  /**
+   * Provider-specific fields merged into every chat-completions body for the
+   * given model (reasoning controls, for example). Kept per descriptor because
+   * hosts reject parameters they do not know.
+   */
+  requestExtras?: (modelId: string, request: AnswerRequest) => Record<string, unknown>;
 }
 
 export class OpenAiCompatibleLlmProvider implements LlmProvider {
@@ -201,6 +250,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
       meta: this.meta,
       signal,
       extraHeaders: this.descriptor.extraHeaders,
+      probePath: this.descriptor.probePath,
     });
   }
 
@@ -215,7 +265,8 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
   async warmup(_modelId: string, signal: AbortSignal): Promise<void> {
     const apiKey = await this.getApiKey();
     if (!apiKey) return;
-    const res = await allowlistedFetch(`${this.descriptor.baseUrl.replace(/\/+$/, '')}/models`, {
+    const path = this.descriptor.probePath ?? DEFAULT_PROBE_PATH;
+    const res = await allowlistedFetch(`${this.descriptor.baseUrl.replace(/\/+$/, '')}${path}`, {
       headers: { authorization: `Bearer ${apiKey}`, ...this.descriptor.extraHeaders },
       signal,
       timeoutMs: TIMEOUTS.warmup,
@@ -237,6 +288,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
       apiKey,
       providerName: this.descriptor.providerName,
       extraHeaders: this.descriptor.extraHeaders,
+      extraBody: this.descriptor.requestExtras?.(input.modelId, input),
       request: input,
     });
   }

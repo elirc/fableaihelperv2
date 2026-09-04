@@ -1,7 +1,13 @@
 import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { answerStats } from '../../shared/answerStats';
 import { PAUSE_PRESETS } from '../../shared/constants';
-import type { AnswerMode, PublicError, PublicSettings, TargetSeconds } from '../../shared/domain';
+import type {
+  AnswerMode,
+  PreferencesSection,
+  PublicError,
+  PublicSettings,
+  TargetSeconds,
+} from '../../shared/domain';
 import { ENDPOINT_DEFAULTS, SilenceEndpointer } from '../../shared/endpointing';
 import { publicError } from '../../shared/errors';
 import { PRACTICE_CATEGORIES, PracticeDeck, type PracticeCategory } from '../../shared/practice';
@@ -28,6 +34,14 @@ const PHASE_LABEL: Record<string, string> = {
   failed: 'Failed',
 };
 
+/** Where the Preferences window opens for each recoverable error action. */
+const ERROR_ACTION_SECTION: Record<NonNullable<PublicError['action']>, PreferencesSection> = {
+  'open-diagnostics': 'diagnostics',
+  'replace-key': 'providers',
+  'download-model': 'providers',
+  'switch-provider': 'providers',
+};
+
 function formatTime(ms: number): string {
   const total = Math.floor(ms / 1000);
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
@@ -37,8 +51,16 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   const [state, dispatch] = useReducer(coachReducer, initialCoachState);
   const recorderRef = useRef<ClipRecorder | null>(null);
   const sessionRef = useRef<string | null>(null);
+  // Last session the user cancelled; a stop() that was mid-encode when Esc
+  // landed checks it before submitting (there is no recorder left to abort).
+  const cancelledSessionRef = useRef<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [liveMessage, setLiveMessage] = useState('');
+  // The sequence remounts the live-region text so an identical message
+  // ("Cancelled." twice) is announced each time, not only on first change.
+  const [live, setLive] = useState({ text: '', seq: 0 });
+  const announce = useCallback((text: string) => {
+    setLive((prev) => ({ text, seq: prev.seq + 1 }));
+  }, []);
   const [notes, setNotes] = useState('');
   const notesRef = useRef('');
   const [practiceCategory, setPracticeCategory] = useState<PracticeCategory | 'all'>('all');
@@ -70,9 +92,9 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   useEffect(() => {
     return window.cuedeck.onSessionEvent((event) => {
       dispatch({ type: 'session-event', event });
-      if (event.type === 'answer-complete') setLiveMessage('Response ready.');
-      if (event.type === 'follow-up') setLiveMessage('Interviewer follow-up ready.');
-      if (event.type === 'error') setLiveMessage(event.error.message);
+      if (event.type === 'answer-complete') announce('Response ready.');
+      if (event.type === 'follow-up') announce('Interviewer follow-up ready.');
+      if (event.type === 'error') announce(event.error.message);
     });
   }, []);
 
@@ -84,6 +106,9 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     dispatch({ type: 'stop-requested' });
     try {
       const clip = await recorder.stop();
+      // Esc arrived during the encode: the session is already retired, so
+      // the clip is discarded rather than submitted behind a Ready chip.
+      if (cancelledSessionRef.current === sessionId) return;
       await window.cuedeck.submitSession(
         sessionId,
         clip.wav,
@@ -121,7 +146,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
         dispatch({ type: 'meter', rms, peak, elapsedMs });
         const signal = endpointer.pushDetailed(rms, elapsedMs);
         if (signal === 'fire') {
-          setLiveMessage('Pause detected — responding.');
+          announce('Pause detected — responding.');
           void stopRecording();
         } else if (signal === 'speculate') {
           // The speaker may be done: start transcribing what we have while
@@ -143,9 +168,19 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     try {
       await window.cuedeck.armCapture(sessionId);
       await recorder.start();
+      if (recorderRef.current !== recorder) {
+        // cancel() detached this recorder while start() was pending; its
+        // stream must not keep running behind a hidden indicator.
+        await recorder.abort();
+        return;
+      }
       dispatch({ type: 'capture-started' });
-      setLiveMessage('Recording started.');
+      announce('Recording started.');
     } catch (err) {
+      if (recorderRef.current !== recorder) {
+        await recorder.abort();
+        return; // cancelled during arming: nothing to report
+      }
       recorderRef.current = null;
       await recorder.abort();
       dispatch({ type: 'capture-failed', error: asCaptureError(err) });
@@ -156,11 +191,14 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     settings.trailingSilenceMs,
     settings.sttLanguage,
     stopRecording,
+    announce,
   ]);
 
   const cancel = useCallback(async () => {
     const sessionId = sessionRef.current;
     dispatch({ type: 'cancel-requested' });
+    if (sessionId) cancelledSessionRef.current = sessionId;
+    sessionRef.current = null;
     const recorder = recorderRef.current;
     recorderRef.current = null;
     if (recorder) await recorder.abort();
@@ -168,8 +206,8 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       await window.cuedeck.cancelSession(sessionId).catch(() => undefined);
       dispatch({ type: 'cancel-confirmed', sessionId });
     }
-    setLiveMessage('Cancelled.');
-  }, []);
+    announce('Cancelled.');
+  }, [announce]);
 
   const regenerate = useCallback(
     async (overrides: Partial<{ answerMode: AnswerMode; targetSeconds: TargetSeconds }> = {}) => {
@@ -195,16 +233,19 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   }, []);
 
   const clearAll = useCallback(async () => {
+    // A generation still in flight would re-add its exchange when it
+    // finished, undoing the clear; stop it first.
+    if (isActivePhase(state.phase) || state.phase === 'cancelling') await cancel();
     dispatch({ type: 'reset' });
     await window.cuedeck.clearConversation().catch(() => undefined);
     dispatch({ type: 'conversation-cleared' });
-    setLiveMessage('Cleared. The next question starts a new conversation.');
-  }, []);
+    announce('Cleared. The next question starts a new conversation.');
+  }, [state.phase, cancel, announce]);
 
   const copyAnswer = useCallback(async () => {
     await navigator.clipboard.writeText(state.answer);
     setCopied(true);
-    setLiveMessage('Response copied to clipboard.');
+    announce('Response copied to clipboard.');
     window.setTimeout(() => setCopied(false), 2000);
   }, [state.answer]);
 
@@ -218,6 +259,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       else if (action === 'stop-listening') void stopRecording();
       else if (action === 'cancel') void cancel();
       else if (action === 'copy-answer' && state.answer) void copyAnswer();
+      else if (action === 'leave-field' && event.target instanceof HTMLElement) event.target.blur();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -260,7 +302,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     const question = deck.draw();
     dispatch({ type: 'edit-transcript', text: question.text });
     setDealtCount(deck.size - deck.remaining);
-    setLiveMessage('Practice question ready.');
+    announce('Practice question ready.');
   };
 
   const changePracticeCategory = (category: PracticeCategory | 'all') => {
@@ -277,6 +319,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   const showSilenceWarning = isRecording && state.silentSoFar && state.elapsedMs > 3000;
   const stats =
     state.phase === 'complete' ? answerStats(state.answer, settings.targetSeconds) : null;
+  const errorAction = state.error?.action;
 
   return (
     <div className={`app-shell${compact ? ' compact' : ''}`}>
@@ -419,16 +462,24 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
         {state.error && (
           <div className="error-banner" role="alert" data-testid="error-banner">
             <span>{state.error.message}</span>
-            {state.error.action === 'open-diagnostics' && (
-              <button className="small" onClick={() => void window.cuedeck.openPreferences()}>
-                Open diagnostics
+            {errorAction && (
+              <button
+                className="small"
+                onClick={() =>
+                  void window.cuedeck.openPreferences(ERROR_ACTION_SECTION[errorAction])
+                }
+                data-testid="error-action"
+              >
+                {errorAction === 'open-diagnostics' ? 'Open diagnostics' : 'Open settings'}
               </button>
             )}
-            {state.error.retryable && (
-              <button className="small" onClick={() => dispatch({ type: 'reset' })}>
-                Dismiss
-              </button>
-            )}
+            <button
+              className="small"
+              onClick={() => dispatch({ type: 'reset' })}
+              data-testid="error-dismiss"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
@@ -457,7 +508,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
               aria-label="transcript (editable)"
               value={state.transcript}
               onChange={(e) => dispatch({ type: 'edit-transcript', text: e.target.value })}
-              disabled={state.phase === 'transcribing' || state.phase === 'generating'}
+              readOnly={state.phase === 'transcribing' || state.phase === 'generating'}
               data-testid="transcript-input"
             />
           </section>
@@ -621,7 +672,12 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             </span>
           ) : (
             <>
-              {settings.llmModelId || 'no model'} via {settings.llmProviderId}
+              {settings.llmModelId || (
+                <span className="warn" data-testid="rail-no-model">
+                  no model
+                </span>
+              )}{' '}
+              via {settings.llmProviderId}
             </>
           )}
         </span>
@@ -650,7 +706,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
         )}
       </footer>
       <div aria-live="polite" className="visually-hidden">
-        {liveMessage}
+        <span key={live.seq}>{live.text}</span>
       </div>
     </div>
   );

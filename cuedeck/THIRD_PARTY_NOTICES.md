@@ -6,19 +6,32 @@ installed tree; the principal components are:
 
 ## Runtime dependencies (packaged)
 
-These ship inside the installed app. The first three are the `dependencies` in
-`package.json`; React and onnxruntime also ship because they are bundled into the built
-JavaScript (React by Vite into the renderer bundle, onnxruntime as a transitive dependency of
-Transformers.js).
+These ship inside the installed app. Vite inlines the pure-JavaScript dependencies (React,
+zod, electron-squirrel-startup) into the built bundles. Transformers.js and its production
+dependency closure are copied from `node_modules` into the app archive instead (see the
+`ignore` allowlist in `forge.config.ts`), because ONNX Runtime and sharp are native
+binaries; those two packages are stored outside the asar archive (`app.asar.unpacked`) so
+their DLLs can be loaded.
 
-| Component                                   | License                                | Use                            |
-| ------------------------------------------- | -------------------------------------- | ------------------------------ |
-| @huggingface/transformers (Transformers.js) | Apache-2.0                             | local speech-to-text inference |
-| electron-squirrel-startup                   | Apache-2.0                             | Squirrel installer events      |
-| zod                                         | MIT                                    | runtime validation             |
-| Electron (incl. Chromium, Node.js)          | MIT / BSD-style (Chromium), MIT (Node) | desktop runtime                |
-| React & react-dom (bundled into renderer)   | MIT                                    | UI framework                   |
-| onnxruntime (bundled by Transformers.js)    | MIT                                    | ONNX model execution           |
+| Component                                    | License                                  | Use                                                    |
+| -------------------------------------------- | ---------------------------------------- | ------------------------------------------------------ |
+| @huggingface/transformers (Transformers.js)  | Apache-2.0                               | local speech-to-text inference                         |
+| @huggingface/jinja                           | MIT                                      | chat-template engine (dependency of Transformers.js)   |
+| onnxruntime-node, onnxruntime-common         | MIT                                      | ONNX model execution (native `onnxruntime.dll`)        |
+| DirectML.dll (shipped with onnxruntime-node) | Microsoft DirectML redistributable EULA  | GPU execution provider binary bundled by ONNX Runtime  |
+| onnxruntime-web                              | MIT                                      | dependency of Transformers.js (WASM backend, unused)   |
+| sharp, @img/sharp-win32-x64                  | Apache-2.0                               | image dependency of Transformers.js (unused for audio) |
+| libvips (inside @img/sharp-win32-x64)        | LGPL-3.0-or-later                        | native library bundled by sharp                        |
+| protobufjs, long, flatbuffers, global-agent  | BSD-3-Clause / Apache-2.0 / BSD-3-Clause | transitive dependencies of ONNX Runtime                |
+| electron-squirrel-startup                    | Apache-2.0                               | Squirrel installer events (bundled)                    |
+| zod                                          | MIT                                      | runtime validation (bundled)                           |
+| Electron (incl. Chromium, Node.js)           | MIT / BSD-style (Chromium), MIT (Node)   | desktop runtime                                        |
+| React & react-dom                            | MIT                                      | UI framework (bundled into the renderer)               |
+
+libvips is LGPL: it is redistributed unmodified as a dynamically linked library, and its
+source is available from <https://github.com/libvips/libvips>. Run
+`npx license-checker --production` after `npm install` for the complete inventory with
+license texts.
 
 ## Development / build (not shipped)
 

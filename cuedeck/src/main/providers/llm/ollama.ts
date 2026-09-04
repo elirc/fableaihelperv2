@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { PROVIDERS } from '../../../shared/catalog';
-import { OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, TIMEOUTS } from '../../../shared/constants';
+import {
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_TEMPERATURE,
+  OLLAMA_KEEP_ALIVE,
+  OLLAMA_NUM_CTX,
+  TIMEOUTS,
+} from '../../../shared/constants';
 import type { AnswerDelta, ModelSummary, ProviderProbe } from '../../../shared/domain';
 import { CoachError } from '../../../shared/errors';
 import { NdjsonParser } from '../../../shared/streaming';
@@ -30,6 +36,50 @@ function runnerOptions(): { num_ctx: number } {
   };
 }
 
+/** Ollama's own words for a request whose `model` field is empty or absent. */
+const MODEL_REQUIRED = /model\s+(is\s+)?(required|missing|empty)|(missing|empty|no)\s+model/i;
+
+/** Longest slice of a provider error body kept in a CoachError detail. */
+const ERROR_DETAIL_CAP = 200;
+
+/**
+ * Read the `error` string Ollama puts in a non-OK JSON body ("model is
+ * required"), falling back to the raw text. The status alone cannot tell an
+ * unconfigured model from a real outage. Consumes the body, which also
+ * releases the socket — callers must not `discardBody` afterwards.
+ */
+async function errorDetail(res: Response): Promise<string> {
+  let raw: string;
+  try {
+    raw = (await res.text()).trim();
+  } catch {
+    return '';
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const error = (parsed as { error?: unknown } | null)?.error;
+    // A JSON body without an `error` string adds nothing to the status.
+    return typeof error === 'string' ? error.slice(0, ERROR_DETAIL_CAP) : '';
+  } catch {
+    // Not JSON (a proxy's HTML error page); the raw text is the best detail.
+    return raw.slice(0, ERROR_DETAIL_CAP);
+  }
+}
+
+/** Map a non-OK /api/chat response to the error the user can act on. */
+function chatError(status: number, detail: string, modelId: string): CoachError {
+  if (status === 404) {
+    return new CoachError('MODEL_NOT_INSTALLED', `model ${modelId} is not installed in Ollama`);
+  }
+  if (status === 400 && MODEL_REQUIRED.test(detail)) {
+    return new CoachError('MODEL_NOT_SELECTED', `Ollama responded 400: ${detail}`);
+  }
+  return new CoachError(
+    'PROVIDER_UNAVAILABLE',
+    detail ? `Ollama responded ${status}: ${detail}` : `Ollama responded ${status}`,
+  );
+}
+
 /**
  * Local LLM via the Ollama HTTP API (spec §12.2). Loopback by default;
  * a non-loopback base URL requires explicit confirmation in preferences
@@ -43,6 +93,21 @@ export class OllamaProvider implements LlmProvider {
   private async base(): Promise<string> {
     const url = (await this.getBaseUrl()).replace(/\/+$/, '');
     return url;
+  }
+
+  /**
+   * The configured server is the one origin plain http may reach off
+   * loopback. A non-loopback address only gets into settings after the
+   * user confirmed in Preferences that prompts and profile data will leave
+   * the device, so the allowlist admits exactly that origin and nothing
+   * else (a redirect elsewhere still fails the host check).
+   */
+  private allowedOrigins(base: string): string[] {
+    try {
+      return [new URL(base).origin];
+    } catch {
+      return [];
+    }
   }
 
   async probe(signal: AbortSignal): Promise<ProviderProbe> {
@@ -66,9 +131,11 @@ export class OllamaProvider implements LlmProvider {
   }
 
   async listModels(signal: AbortSignal): Promise<ModelSummary[]> {
-    const res = await allowlistedFetch(`${await this.base()}/api/tags`, {
+    const base = await this.base();
+    const res = await allowlistedFetch(`${base}/api/tags`, {
       signal,
       timeoutMs: TIMEOUTS.probe,
+      allowedOrigins: this.allowedOrigins(base),
     });
     if (!res.ok) {
       discardBody(res);
@@ -116,13 +183,16 @@ export class OllamaProvider implements LlmProvider {
           keep_alive: OLLAMA_KEEP_ALIVE,
           options: runnerOptions(),
         };
-    const res = await allowlistedFetch(`${await this.base()}/api/chat`, {
+    const base = await this.base();
+    const res = await allowlistedFetch(`${base}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
       signal,
       timeoutMs: TIMEOUTS.warmup,
+      allowedOrigins: this.allowedOrigins(base),
     });
+    if (!res.ok) throw chatError(res.status, await errorDetail(res), modelId);
     discardBody(res);
   }
 
@@ -142,8 +212,8 @@ export class OllamaProvider implements LlmProvider {
           keep_alive: OLLAMA_KEEP_ALIVE,
           options: {
             ...runnerOptions(),
-            num_predict: input.maxTokens ?? 700,
-            temperature: input.temperature ?? 0.6,
+            num_predict: input.maxTokens ?? DEFAULT_MAX_TOKENS,
+            temperature: input.temperature ?? DEFAULT_TEMPERATURE,
           },
           messages: [
             { role: 'system', content: input.system },
@@ -152,23 +222,14 @@ export class OllamaProvider implements LlmProvider {
         }),
         signal: input.signal,
         timeoutMs: TIMEOUTS.llmTotal,
+        allowedOrigins: this.allowedOrigins(base),
       });
     } catch (err) {
       if (err instanceof CoachError) throw err;
       if (err instanceof Error && err.name === 'AbortError') throw err;
       throw new CoachError('LOCAL_PROVIDER_UNREACHABLE', 'could not connect to Ollama');
     }
-    if (res.status === 404) {
-      discardBody(res);
-      throw new CoachError(
-        'MODEL_NOT_INSTALLED',
-        `model ${input.modelId} is not installed in Ollama`,
-      );
-    }
-    if (!res.ok) {
-      discardBody(res);
-      throw new CoachError('PROVIDER_UNAVAILABLE', `Ollama responded ${res.status}`);
-    }
+    if (!res.ok) throw chatError(res.status, await errorDetail(res), input.modelId);
     const parser = new NdjsonParser();
     let sequence = 0;
     const handle = (obj: unknown): AnswerDelta | null => {

@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { CerebrasLlmProvider } from '../../src/main/providers/llm/cerebras';
+import { CerebrasLlmProvider, cerebrasRequestExtras } from '../../src/main/providers/llm/cerebras';
+import { GroqLlmProvider, groqRequestExtras } from '../../src/main/providers/llm/groq';
+import { openRouterRequestExtras } from '../../src/main/providers/llm/openRouter';
+import { CLOUD_MODELS } from '../../src/shared/catalog';
 import { GeminiLlmProvider, supportsDisabledThinking } from '../../src/main/providers/llm/gemini';
 import { OllamaProvider } from '../../src/main/providers/llm/ollama';
 import type { AnswerRequest } from '../../src/main/providers/contracts';
-import { OLLAMA_KEEP_ALIVE } from '../../src/shared/constants';
+import {
+  DEFAULT_MAX_TOKENS,
+  OLLAMA_KEEP_ALIVE,
+  REASONING_TOKEN_HEADROOM,
+} from '../../src/shared/constants';
 import { collect, startFakeServer, writeChunked, type FakeServer } from '../helpers/fakeServer';
 
 const servers: FakeServer[] = [];
@@ -174,11 +181,11 @@ describe('CerebrasLlmProvider (descriptor-driven OpenAI-compatible)', () => {
     expect(s.requests[0].headers.authorization).toBe('Bearer test-key-123');
   });
 
-  it('lists its pinned free-tier models, recommended 70B first', async () => {
+  it('lists its pinned free-tier models, recommended model first', async () => {
     const provider = new CerebrasLlmProvider(key);
     const models = await provider.listModels(signal());
     expect(models).toHaveLength(2);
-    expect(models[0].id).toBe('llama-3.3-70b');
+    expect(models[0].id).toBe(CLOUD_MODELS.cerebrasModel);
     expect(models.every((m) => m.providerId === 'cerebras')).toBe(true);
   });
 
@@ -212,5 +219,73 @@ describe('CerebrasLlmProvider (descriptor-driven OpenAI-compatible)', () => {
       public: { code: 'CREDENTIAL_MISSING' },
     });
     expect(s.requests).toHaveLength(0);
+  });
+});
+
+describe('reasoning controls for gpt-oss free-tier models', () => {
+  const sseBody = `data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' } }] })}\n\ndata: [DONE]\n\n`;
+
+  async function captureBody(
+    make: (baseUrl: string) => GroqLlmProvider | CerebrasLlmProvider,
+    modelId: string,
+  ): Promise<Record<string, unknown>> {
+    const s = await server((req, res) => {
+      if (req.url === '/chat/completions') {
+        res.setHeader('content-type', 'text/event-stream');
+        void writeChunked(res, sseBody);
+      } else res.writeHead(404).end();
+    });
+    await collect(make(s.baseUrl).generate(request({ modelId })));
+    return JSON.parse(s.requests[0].body.toString()) as Record<string, unknown>;
+  }
+
+  it('Groq: gpt-oss requests ask for low effort and exclude reasoning from the stream', async () => {
+    const sent = await captureBody((u) => new GroqLlmProvider(key, u), CLOUD_MODELS.groqLlmModel);
+    expect(sent.reasoning_effort).toBe('low');
+    expect(sent.include_reasoning).toBe(false);
+    expect(sent.model).toBe(CLOUD_MODELS.groqLlmModel);
+    // Hidden reasoning counts against max_tokens; the visible budget keeps its headroom.
+    expect(sent.max_tokens).toBe(DEFAULT_MAX_TOKENS + REASONING_TOKEN_HEADROOM);
+  });
+
+  it('Groq: non-gpt-oss models get no reasoning fields (the API rejects them)', async () => {
+    const sent = await captureBody((u) => new GroqLlmProvider(key, u), 'qwen/qwen3.6-27b');
+    expect(sent).not.toHaveProperty('reasoning_effort');
+    expect(sent).not.toHaveProperty('include_reasoning');
+    expect(sent.max_tokens).toBe(DEFAULT_MAX_TOKENS);
+  });
+
+  it('Cerebras: gpt-oss requests ask for low effort only; gemma is untouched', async () => {
+    const oss = await captureBody(
+      (u) => new CerebrasLlmProvider(key, u),
+      CLOUD_MODELS.cerebrasModel,
+    );
+    expect(oss.reasoning_effort).toBe('low');
+    expect(oss).not.toHaveProperty('include_reasoning');
+    const gemma = await captureBody(
+      (u) => new CerebrasLlmProvider(key, u),
+      CLOUD_MODELS.cerebrasFastModel,
+    );
+    expect(gemma).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('extras are pure functions of the model id and the visible token budget', () => {
+    const tight = { maxTokens: 160 };
+    expect(groqRequestExtras('openai/gpt-oss-20b', tight)).toEqual({
+      reasoning_effort: 'low',
+      include_reasoning: false,
+      max_tokens: 160 + REASONING_TOKEN_HEADROOM,
+    });
+    expect(groqRequestExtras('whatever', tight)).toEqual({});
+    expect(cerebrasRequestExtras('gpt-oss-120b', {})).toEqual({
+      reasoning_effort: 'low',
+      max_tokens: DEFAULT_MAX_TOKENS + REASONING_TOKEN_HEADROOM,
+    });
+    expect(cerebrasRequestExtras('gemma-4-31b', tight)).toEqual({});
+    expect(openRouterRequestExtras('openai/gpt-oss-120b:free', tight)).toEqual({
+      reasoning: { effort: 'low', exclude: true },
+      max_tokens: 160 + REASONING_TOKEN_HEADROOM,
+    });
+    expect(openRouterRequestExtras('openrouter/free', tight)).toEqual({});
   });
 });

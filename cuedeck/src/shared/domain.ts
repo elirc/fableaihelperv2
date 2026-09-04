@@ -37,6 +37,7 @@ export const PUBLIC_ERROR_CODES = [
   'AUDIO_TOO_SHORT',
   'AUDIO_TOO_LONG',
   'MODEL_NOT_INSTALLED',
+  'MODEL_NOT_SELECTED',
   'LOCAL_PROVIDER_UNREACHABLE',
   'CREDENTIAL_MISSING',
   'CREDENTIAL_REJECTED',
@@ -62,6 +63,18 @@ export interface PublicError {
   action?: 'open-diagnostics' | 'replace-key' | 'download-model' | 'switch-provider';
   detail?: string;
 }
+
+/** Tabs of the Preferences window; the coach can open it straight at one. */
+export const PREFERENCES_SECTIONS = [
+  'general',
+  'providers',
+  'profiles',
+  'history',
+  'diagnostics',
+  'about',
+] as const;
+
+export type PreferencesSection = (typeof PREFERENCES_SECTIONS)[number];
 
 export interface ProviderMeta {
   id: string;

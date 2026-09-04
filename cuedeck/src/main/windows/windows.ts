@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron';
 import path from 'node:path';
+import type { PreferencesSection } from '../../shared/domain';
 import { hardenWebContents } from '../security/windowSecurity';
 
 /**
@@ -51,9 +52,29 @@ export function createCoachWindow(preloadPath: string, alwaysOnTop: boolean): Br
   return win;
 }
 
+function preferencesHash(section?: PreferencesSection): string {
+  return section ? `/preferences/${section}` : '/preferences';
+}
+
+/**
+ * Point the preferences window at a section. Only the fragment changes, so
+ * this is an in-page navigation the renderer's hashchange listener picks up.
+ */
+export function showPreferencesSection(win: BrowserWindow, section?: PreferencesSection): void {
+  const entry = rendererEntry();
+  const hash = preferencesHash(section);
+  // Loading a URL identical to the current one is a reload, which would
+  // remount the page and drop a half-typed key or a download in progress.
+  const current = win.webContents.getURL();
+  if (current && current.endsWith(`#${hash}`)) return;
+  if (entry.devUrl) void win.loadURL(`${entry.devUrl}#${hash}`);
+  else void win.loadFile(entry.file as string, { hash });
+}
+
 export function createPreferencesWindow(
   preloadPath: string,
   parent?: BrowserWindow,
+  section?: PreferencesSection,
 ): BrowserWindow {
   const win = new BrowserWindow({
     width: 720,
@@ -68,9 +89,7 @@ export function createPreferencesWindow(
     webPreferences: { ...SECURE_PREFERENCES, preload: preloadPath },
   });
   hardenWebContents(win);
-  const entry = rendererEntry();
-  if (entry.devUrl) void win.loadURL(`${entry.devUrl}#/preferences`);
-  else void win.loadFile(entry.file as string, { hash: '/preferences' });
+  showPreferencesSection(win, section);
   win.once('ready-to-show', () => win.show());
   return win;
 }

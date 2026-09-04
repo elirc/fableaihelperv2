@@ -13,6 +13,7 @@ const PATTERNS: Array<{ re: RegExp; replacement: string }> = [
   { re: /\bbearer\s+[\w.~+/-]{8,}/gi, replacement: 'Bearer [REDACTED]' },
   // Known provider key shapes
   { re: /\bgsk_[A-Za-z0-9_-]{10,}\b/g, replacement: '[REDACTED]' },
+  { re: /\bcsk-[A-Za-z0-9_-]{10,}\b/g, replacement: '[REDACTED]' },
   { re: /\bsk-or-[A-Za-z0-9_-]{10,}\b/g, replacement: '[REDACTED]' },
   { re: /\bsk-[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED]' },
   { re: /\bAIza[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED]' },

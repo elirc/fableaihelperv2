@@ -338,6 +338,40 @@ describe('OpenRouterProvider', () => {
     expect(models.map((m) => m.id)).toEqual(['openrouter/free', 'meta/llama:free']);
   });
 
+  it('probes the authenticated key endpoint, so a bad key is reported even though /models is public', async () => {
+    const s = await server((req, res) => {
+      if (req.url === '/auth/key') {
+        if (req.headers.authorization === 'Bearer test-key-123') {
+          res.end(JSON.stringify({ data: { label: 'cuedeck', usage: 0 } }));
+        } else res.writeHead(401).end(JSON.stringify({ error: { message: 'bad key' } }));
+      } else if (req.url === '/models') {
+        res.end(JSON.stringify({ data: [{ id: 'meta/llama:free', pricing: { prompt: '0' } }] }));
+      } else res.writeHead(404).end();
+    });
+    const good = await new OpenRouterProvider(key, s.baseUrl).probe(new AbortController().signal);
+    expect(good.status).toBe('ready');
+    expect(good.models?.map((m) => m.id)).toContain('meta/llama:free');
+
+    const bad = await new OpenRouterProvider(async () => 'revoked', s.baseUrl).probe(
+      new AbortController().signal,
+    );
+    expect(bad.status).toBe('missing-credential');
+    expect(s.requests.map((r) => r.url).filter((u) => u === '/auth/key')).toHaveLength(2);
+  });
+
+  it('warms up against the authenticated key endpoint as well', async () => {
+    const s = await server((req, res) => {
+      if (req.url === '/auth/key') res.end('{"data":{}}');
+      else res.writeHead(404).end();
+    });
+    await new OpenRouterProvider(key, s.baseUrl).warmup(
+      'openrouter/free',
+      new AbortController().signal,
+    );
+    expect(s.requests.map((r) => r.url)).toEqual(['/auth/key']);
+    expect(s.requests[0].headers.authorization).toBe('Bearer test-key-123');
+  });
+
   it('refuses to generate with a non-free model id', async () => {
     const s = await server((_req, res) => void res.end());
     await expect(

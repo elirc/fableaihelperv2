@@ -12,6 +12,11 @@ export interface EncodedClip {
   durationMs: number;
 }
 
+/** Thrown by start() when abort() won the race; callers map it like a denied grant. */
+function abortedError(): DOMException {
+  return new DOMException('capture aborted', 'AbortError');
+}
+
 /**
  * System-audio recorder (CAP-01..CAP-09). Capture starts only after the
  * caller has armed a one-use grant and the user pressed Listen. The
@@ -38,6 +43,12 @@ export class ClipRecorder {
     // The armed grant in the main process supplies the source; this request
     // never shows a picker and fails closed when unarmed (CAPTURE_DENIED).
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    if (this.stopped) {
+      // abort() ran while the request was pending (Esc during arming): the
+      // source must be released here or it outlives the hidden indicator.
+      for (const track of stream.getTracks()) track.stop();
+      throw abortedError();
+    }
     for (const track of stream.getVideoTracks()) track.stop();
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
@@ -48,6 +59,10 @@ export class ClipRecorder {
     this.context = new AudioContext();
     this.sampleRate = this.context.sampleRate;
     await this.context.audioWorklet.addModule('./audio-capture-worklet.js');
+    if (this.stopped) {
+      await this.teardown();
+      throw abortedError();
+    }
     const source = this.context.createMediaStreamSource(this.stream);
     this.worklet = new AudioWorkletNode(this.context, 'cuedeck-capture', {
       numberOfInputs: 1,

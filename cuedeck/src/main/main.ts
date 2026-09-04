@@ -2,7 +2,7 @@ import { app, BrowserWindow, desktopCapturer, safeStorage, session } from 'elect
 import os from 'node:os';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
-import type { OperationEvent, SessionEvent } from '../shared/domain';
+import type { OperationEvent, PublicSettings, SessionEvent } from '../shared/domain';
 import { Diagnostics } from './diagnostics';
 import { registerIpc, type AppServices } from './ipc/register';
 import { ProviderRegistry } from './providers/registry';
@@ -21,12 +21,20 @@ import { SecretVault } from './settings/secretVault';
 import { SessionCoordinator } from './sessions/coordinator';
 import { HistoryStore } from './storage/historyStore';
 import { ProfileStore } from './storage/profileStore';
-import { createCoachWindow, createPreferencesWindow } from './windows/windows';
+import {
+  createCoachWindow,
+  createPreferencesWindow,
+  showPreferencesSection,
+} from './windows/windows';
 import { SttWorkerManager } from './workers/sttWorkerManager';
 
 if (started) {
   app.quit();
 }
+
+// Squirrel.Windows shortcuts carry this AppUserModelID; setting the same one
+// keeps taskbar pinning and notification grouping attached to the app.
+app.setAppUserModelId('com.squirrel.cuedeck.cuedeck');
 
 // E2E-test hook: isolate user data (settings, secrets, history) per run.
 // Harmless in production, where the variable is unset.
@@ -40,14 +48,26 @@ if (!app.requestSingleInstanceLock()) {
 
 let coachWindow: BrowserWindow | null = null;
 let preferencesWindow: BrowserWindow | null = null;
+/** Set once `bootstrap` has wired services; `activate` only recreates the window. */
+let settingsStore: PublicSettingsStore | null = null;
+
+async function openCoachWindow(settings: PublicSettingsStore): Promise<BrowserWindow> {
+  const current = await settings.get();
+  const win = createCoachWindow(preloadPath(), current.alwaysOnTop);
+  win.on('closed', () => {
+    if (coachWindow === win) coachWindow = null;
+  });
+  coachWindow = win;
+  return win;
+}
 
 function preloadPath(): string {
   return path.join(__dirname, 'preload.js');
 }
 
 function broadcast(
-  channel: 'session:event' | 'operation:event',
-  payload: SessionEvent | OperationEvent,
+  channel: 'session:event' | 'operation:event' | 'settings:changed',
+  payload: SessionEvent | OperationEvent | PublicSettings,
 ): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
@@ -99,6 +119,12 @@ async function bootstrap(): Promise<void> {
   const coordinator = new SessionCoordinator({
     registry,
     getSettings: () => settings.get(),
+    // Same write-then-broadcast path as the settings:updatePublic handler, so
+    // a model the coordinator resolved reaches the coach window's status rail.
+    updateSettings: async (patch) => {
+      const updated = await settings.patch(patch);
+      broadcast('settings:changed', updated);
+    },
     getProfile: (id) => profiles.get(id),
     saveHistory: (item, retentionDays) => history.add(item, retentionDays),
     emit: (event) => broadcast('session:event', event),
@@ -124,12 +150,13 @@ async function bootstrap(): Promise<void> {
       totalMemoryMb: Math.round(os.totalmem() / (1024 * 1024)),
     }),
     broadcast,
-    openPreferencesWindow: () => {
+    openPreferencesWindow: (section) => {
       if (preferencesWindow && !preferencesWindow.isDestroyed()) {
+        if (section) showPreferencesSection(preferencesWindow, section);
         preferencesWindow.focus();
         return;
       }
-      preferencesWindow = createPreferencesWindow(preloadPath(), coachWindow ?? undefined);
+      preferencesWindow = createPreferencesWindow(preloadPath(), coachWindow ?? undefined, section);
       preferencesWindow.on('closed', () => {
         preferencesWindow = null;
       });
@@ -169,16 +196,14 @@ async function bootstrap(): Promise<void> {
   });
 
   registerIpc(services);
+  settingsStore = settings;
 
-  const initial = await settings.get();
-  coachWindow = createCoachWindow(preloadPath(), initial.alwaysOnTop);
-  coachWindow.on('closed', () => {
-    coachWindow = null;
-  });
+  await openCoachWindow(settings);
 
   // First-turn warmup: people open CueDeck right before they need it, so
   // load the local models now rather than inside the first Listen. Delayed
   // so the window paints first; a no-op until onboarding is complete.
+  const initial = await settings.get();
   if (initial.onboardingComplete) {
     setTimeout(() => void coordinator.prewarm(), STARTUP_PREWARM_DELAY_MS).unref?.();
   }
@@ -200,7 +225,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) void bootstrap();
+  // Services and IPC handlers are registered once; re-running bootstrap
+  // here would throw on the duplicate ipcMain.handle registrations.
+  if (BrowserWindow.getAllWindows().length > 0) return;
+  if (settingsStore) void openCoachWindow(settingsStore);
+  else void bootstrap();
 });
 
 app.on('web-contents-created', (_event, contents) => {

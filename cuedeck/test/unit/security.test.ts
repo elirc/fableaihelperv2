@@ -1,6 +1,17 @@
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { CaptureGrant } from '../../src/main/security/captureGrant';
 import { isAllowedUrl, isLoopbackHost } from '../../src/main/security/http';
+
+// windowSecurity pulls in the Electron main-process API; only `app.isPackaged`
+// is consulted by the pure helpers under test here.
+vi.mock('electron', () => ({
+  app: { isPackaged: false },
+  shell: { openExternal: async () => undefined },
+  session: { defaultSession: {} },
+}));
+const { isTrustedRendererUrl } = await import('../../src/main/security/windowSecurity');
 import { CoachError, publicError, toPublicError } from '../../src/shared/errors';
 import { PUBLIC_ERROR_CODES } from '../../src/shared/domain';
 import { isFreeOpenRouterModel } from '../../src/main/providers/llm/openRouter';
@@ -67,6 +78,96 @@ describe('outbound host allowlist', () => {
     expect(isLoopbackHost('192.168.1.10')).toBe(false);
     expect(isLoopbackHost('evil-localhost.com')).toBe(false);
   });
+
+  describe('explicitly allowed origins (user-confirmed remote Ollama)', () => {
+    const lan = 'http://192.168.1.10:11434';
+
+    it('admits exactly the confirmed origin over plain http', () => {
+      expect(isAllowedUrl(`${lan}/api/chat`, [lan])).toBe(true);
+      expect(isAllowedUrl(`${lan}/api/chat`)).toBe(false);
+    });
+
+    it('only unlocks private-network hosts, never a public address, even when listed', () => {
+      for (const origin of [
+        'http://10.0.0.5:11434',
+        'http://172.20.1.1:11434',
+        'http://169.254.10.10:11434',
+        'http://[fd00::1]:11434',
+        'http://ollama-box:11434',
+        'http://nas.local:11434',
+        'https://gpu.internal',
+      ]) {
+        expect(isAllowedUrl(`${origin}/api/tags`, [origin]), origin).toBe(true);
+      }
+      for (const origin of [
+        'http://203.0.113.5:11434',
+        'http://8.8.8.8',
+        'https://ollama.example.net',
+        'http://172.32.0.1:11434',
+        'http://[2001:db8::1]:11434',
+      ]) {
+        expect(isAllowedUrl(`${origin}/api/tags`, [origin]), origin).toBe(false);
+      }
+    });
+
+    it('is an exact origin match: another port, scheme, or host is still refused', () => {
+      expect(isAllowedUrl('http://192.168.1.10:11435/api/chat', [lan])).toBe(false);
+      expect(isAllowedUrl('https://192.168.1.10:11434/api/chat', [lan])).toBe(false);
+      expect(isAllowedUrl('http://192.168.1.11:11434/api/chat', [lan])).toBe(false);
+      expect(isAllowedUrl('http://api.groq.com/x', [lan])).toBe(false);
+    });
+
+    it('never admits non-http(s) schemes, even when listed', () => {
+      expect(isAllowedUrl('ftp://192.168.1.10/x', ['ftp://192.168.1.10'])).toBe(false);
+      expect(isAllowedUrl('file:///C:/x', ['file://'])).toBe(false);
+    });
+  });
+});
+
+describe('trusted renderer URLs', () => {
+  const file = path.join('C:\\Program Files', 'CueDeck', 'renderer', 'main_window', 'index.html');
+  const packaged = { file, packaged: true };
+  const appUrl = pathToFileURL(file).href;
+
+  it('trusts only the built index.html (any hash route) when packaged', () => {
+    expect(isTrustedRendererUrl(appUrl, packaged)).toBe(true);
+    expect(isTrustedRendererUrl(`${appUrl}#/preferences`, packaged)).toBe(true);
+    expect(isTrustedRendererUrl(`${appUrl}?x=1#/`, packaged)).toBe(true);
+  });
+
+  it('refuses every other file:// document', () => {
+    const sibling = pathToFileURL(path.join(path.dirname(file), 'evil.html')).href;
+    expect(isTrustedRendererUrl(sibling, packaged)).toBe(false);
+    expect(isTrustedRendererUrl('file:///C:/Users/me/Downloads/page.html', packaged)).toBe(false);
+    expect(isTrustedRendererUrl(`${appUrl}/../evil.html`, packaged)).toBe(false);
+  });
+
+  it('refuses http origins (including the dev server) when packaged', () => {
+    expect(isTrustedRendererUrl('http://localhost:5173/', packaged)).toBe(false);
+    expect(isTrustedRendererUrl('http://127.0.0.1:5173/', packaged)).toBe(false);
+    expect(
+      isTrustedRendererUrl('http://localhost:5173/', {
+        ...packaged,
+        devUrl: 'http://localhost:5173',
+      }),
+    ).toBe(false);
+  });
+
+  it('in development trusts exactly the dev-server origin', () => {
+    const dev = { devUrl: 'http://localhost:5173', packaged: false };
+    expect(isTrustedRendererUrl('http://localhost:5173/#/', dev)).toBe(true);
+    expect(isTrustedRendererUrl('http://localhost:5173/index.html#/preferences', dev)).toBe(true);
+    expect(isTrustedRendererUrl('http://localhost:5174/', dev)).toBe(false);
+    expect(isTrustedRendererUrl('http://127.0.0.1:5173/', dev)).toBe(false);
+    expect(isTrustedRendererUrl('https://localhost:5173/', dev)).toBe(false);
+    expect(isTrustedRendererUrl(appUrl, dev)).toBe(false);
+  });
+
+  it('rejects garbage and unrelated schemes', () => {
+    expect(isTrustedRendererUrl('not a url', packaged)).toBe(false);
+    expect(isTrustedRendererUrl('about:blank', packaged)).toBe(false);
+    expect(isTrustedRendererUrl('https://evil.example.com/', packaged)).toBe(false);
+  });
 });
 
 describe('public error mapping', () => {
@@ -126,6 +227,13 @@ describe('public error mapping', () => {
       expect(err.retryable, code).toBe(false);
       expect(err.action, code).toBe('replace-key');
     }
+  });
+
+  it('sends an unselected response model to the provider settings, without a retry', () => {
+    const err = publicError('MODEL_NOT_SELECTED');
+    expect(err.retryable).toBe(false);
+    expect(err.action).toBe('switch-provider');
+    expect(err.message).toMatch(/Providers/);
   });
 
   it('never copies the internal detail into the user-facing message', () => {

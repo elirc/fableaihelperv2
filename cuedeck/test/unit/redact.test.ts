@@ -18,6 +18,12 @@ describe('redactSecrets', () => {
     expect(redactSecrets('sk-or-v1-aaaabbbbccccdddd')).not.toContain('sk-or-v1-aaaabbbbccccdddd');
   });
 
+  it('redacts Cerebras keys', () => {
+    const out = redactSecrets('cerebras rejected csk-abcdef1234567890xyz, retrying');
+    expect(out).toContain('[REDACTED]');
+    expect(out).not.toContain('csk-abcdef1234567890xyz');
+  });
+
   it('redacts Google API keys', () => {
     expect(redactSecrets('url?key=AIzaSyA1234567890abcdefghijk')).not.toContain(
       'AIzaSyA1234567890abcdefghijk',

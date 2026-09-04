@@ -120,6 +120,7 @@ describe('SilenceEndpointer', () => {
         minSpeechMs: 500,
         trailingSilenceMs: 400,
         speculateAfterMs: 200,
+        respeculateAfterMs: 3_000,
         speechRms: 0.01,
         silenceRms: 0.005,
       }),
@@ -183,6 +184,49 @@ describe('SilenceEndpointer speculation', () => {
       { ms: 3000, rms: SILENCE }, // real end: speculate again, then fire
     ]);
     expect(signals.map((s) => s.signal)).toEqual(['speculate', 'speculate', 'fire']);
+  });
+
+  it('skips a second snapshot until the clip has grown by respeculateAfterMs', () => {
+    // Auto-respond off: the endpointer never fires, so without the bound
+    // every ≥0.7 s pause would re-encode and re-upload the whole clip.
+    const noAutoStop = () =>
+      new SilenceEndpointer({ ...ENDPOINT_DEFAULTS, trailingSilenceMs: Number.POSITIVE_INFINITY });
+    const signals = runDetailed(noAutoStop(), [
+      { ms: 3000, rms: SPEECH },
+      { ms: 1000, rms: SILENCE }, // first pause: snapshot
+      { ms: 1000, rms: SPEECH },
+      { ms: 1000, rms: SILENCE }, // only ~2 s of new audio: skipped
+      { ms: 3000, rms: SPEECH },
+      { ms: 1000, rms: SILENCE }, // ~4 s of new audio: snapshot again
+    ]);
+    expect(signals.map((s) => s.signal)).toEqual(['speculate', 'speculate']);
+    expect(signals[1].at - signals[0].at).toBeGreaterThanOrEqual(
+      ENDPOINT_DEFAULTS.respeculateAfterMs,
+    );
+  });
+
+  it('a skipped pause is not retried as its silence lengthens', () => {
+    const noAutoStop = new SilenceEndpointer({
+      ...ENDPOINT_DEFAULTS,
+      trailingSilenceMs: Number.POSITIVE_INFINITY,
+    });
+    const signals = runDetailed(noAutoStop, [
+      { ms: 3000, rms: SPEECH },
+      { ms: 1000, rms: SILENCE },
+      { ms: 1000, rms: SPEECH },
+      { ms: 20_000, rms: SILENCE }, // the clip grows, but only with silence
+    ]);
+    expect(signals.map((s) => s.signal)).toEqual(['speculate']);
+  });
+
+  it('never delays the fire itself, only the extra snapshot', () => {
+    const signals = runDetailed(new SilenceEndpointer(), [
+      { ms: 3000, rms: SPEECH },
+      { ms: 1000, rms: SILENCE },
+      { ms: 1000, rms: SPEECH },
+      { ms: 3000, rms: SILENCE },
+    ]);
+    expect(signals.map((s) => s.signal)).toEqual(['speculate', 'fire']);
   });
 
   it('push() still reports only the fire moment', () => {

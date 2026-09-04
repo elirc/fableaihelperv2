@@ -6,6 +6,7 @@ import type {
   HistoryItem,
   ModelSummary,
   OperationEvent,
+  PreferencesSection,
   Profile,
   ProviderMeta,
   ProviderProbe,
@@ -49,7 +50,9 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 
 const api = {
   getCapabilities: () => invoke<AppCapabilities>('app:getCapabilities'),
-  openPreferences: () => invoke<boolean>('app:openPreferences'),
+  /** Open (or focus) the Preferences window, optionally at a section. */
+  openPreferences: (section?: PreferencesSection) =>
+    invoke<boolean>('app:openPreferences', { section }),
   openExternal: (url: string) => invoke<boolean>('app:openExternal', { url }),
 
   getPublicSettings: () => invoke<PublicSettings>('settings:getPublic'),
@@ -108,6 +111,9 @@ const api = {
     subscribe<SessionEvent>('session:event', callback),
   onOperationEvent: (callback: (event: OperationEvent) => void) =>
     subscribe<OperationEvent>('operation:event', callback),
+  /** Fires in every window after any settings or credential write. */
+  onSettingsChanged: (callback: (settings: PublicSettings) => void) =>
+    subscribe<PublicSettings>('settings:changed', callback),
 };
 
 export type CueDeckApi = typeof api;

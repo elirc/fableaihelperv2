@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { CoachError } from '../../shared/errors';
-import { readJsonFile, writeJsonFile } from '../storage/jsonFile';
+import fs from 'node:fs/promises';
+import { writeJsonFile } from '../storage/jsonFile';
 
 /**
  * Encrypted credential vault. Values are encrypted with Electron
@@ -31,8 +32,25 @@ export class SecretVault {
   }
 
   private async read(): Promise<VaultFile> {
-    const raw = (await readJsonFile(this.filePath)) as VaultFile | null;
-    if (!raw || raw.version !== 1 || typeof raw.entries !== 'object') {
+    // A missing or corrupt vault (truncated write, bad JSON) is treated as
+    // empty so a fresh key can be saved over it. A transient I/O failure is
+    // not: set()/remove() read-modify-write the whole file, and treating an
+    // EBUSY/EPERM read as empty would rewrite the vault with every other key
+    // gone. Writes stay atomic.
+    let text: string;
+    try {
+      text = await fs.readFile(this.filePath, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, entries: {} };
+      throw new CoachError('STORAGE_FAILED', 'reading secrets.json failed');
+    }
+    let raw: VaultFile | null;
+    try {
+      raw = JSON.parse(text) as VaultFile;
+    } catch {
+      raw = null;
+    }
+    if (!raw || raw.version !== 1 || typeof raw.entries !== 'object' || raw.entries === null) {
       return { version: 1, entries: {} };
     }
     return raw;

@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { OllamaProvider } from '../../src/main/providers/llm/ollama';
 import { GroqLlmProvider } from '../../src/main/providers/llm/groq';
@@ -25,10 +26,24 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((s) => s.close()));
 });
 
-async function server(handler: Parameters<typeof startFakeServer>[0]): Promise<FakeServer> {
-  const s = await startFakeServer(handler);
+async function server(
+  handler: Parameters<typeof startFakeServer>[0],
+  host?: string,
+): Promise<FakeServer> {
+  const s = await startFakeServer(handler, host);
   servers.push(s);
   return s;
+}
+
+/** A non-loopback IPv4 address of this machine, when it has one. */
+function lanAddress(): string | null {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      const v4 = entry.family === 'IPv4' || (entry.family as unknown) === 4;
+      if (v4 && !entry.internal) return entry.address;
+    }
+  }
+  return null;
 }
 
 function request(overrides: Partial<AnswerRequest> = {}): AnswerRequest {
@@ -110,9 +125,36 @@ describe('host allowlist enforcement', () => {
     ).rejects.toThrow(/host not allowed/);
   });
 
-  it('refuses plain-http Ollama base URLs that are not loopback', async () => {
+  it('refuses plain-http non-loopback URLs for providers without a confirmed origin', async () => {
     await expect(
-      collect(new OllamaProvider(async () => 'http://10.0.0.7:11434').generate(request())),
+      collect(new GroqLlmProvider(key, 'http://10.0.0.7:11434/openai/v1').generate(request())),
+    ).rejects.toThrow(/host not allowed/);
+  });
+
+  // The Ollama base URL is the one origin a user may point off-device (after
+  // the Preferences confirmation); the provider passes exactly that origin
+  // to the allowlist. Needs a real non-loopback interface to bind to.
+  it.skipIf(lanAddress() === null)(
+    'reaches a user-confirmed non-loopback Ollama origin over plain http',
+    async () => {
+      const s = await server((req, res) => {
+        if (req.url === '/api/tags') res.end(JSON.stringify({ models: [{ name: 'q:3b' }] }));
+        else if (req.url === '/api/chat')
+          res.end(`${JSON.stringify({ message: { content: 'lan answer' }, done: true })}\n`);
+        else res.writeHead(404).end();
+      }, lanAddress() as string);
+      const provider = new OllamaProvider(async () => s.baseUrl);
+      expect((await provider.probe(new AbortController().signal)).status).toBe('ready');
+      const deltas = await collect(provider.generate(request()));
+      expect(deltas.map((d) => d.text)).toEqual(['lan answer']);
+    },
+  );
+
+  it('the confirmed Ollama origin does not open other hosts', async () => {
+    // A base URL on a LAN origin must not let a request slip to a different
+    // port on the same host — the allowance is the exact origin only.
+    await expect(
+      collect(new GroqLlmProvider(key, 'http://10.0.0.7:11435/openai/v1').generate(request())),
     ).rejects.toThrow(/host not allowed/);
   });
 });
@@ -123,6 +165,34 @@ describe('OllamaProvider failure modes', () => {
     await expect(
       collect(new OllamaProvider(async () => s.baseUrl).generate(request())),
     ).rejects.toThrow(/PROVIDER_UNAVAILABLE/);
+  });
+
+  // Ollama answers a request with an empty `model` field with a 400 whose
+  // body says why; without reading it every 400 looked like an outage.
+  it('maps a 400 about a missing model to MODEL_NOT_SELECTED', async () => {
+    const s = await server(
+      (_req, res) => void res.writeHead(400).end(JSON.stringify({ error: 'model is required' })),
+    );
+    await expect(
+      collect(new OllamaProvider(async () => s.baseUrl).generate(request({ modelId: '' }))),
+    ).rejects.toThrow(/MODEL_NOT_SELECTED: Ollama responded 400: model is required/);
+  });
+
+  it('maps any other 400 to PROVIDER_UNAVAILABLE and keeps the body text as detail', async () => {
+    const s = await server(
+      (_req, res) =>
+        void res.writeHead(400).end(JSON.stringify({ error: 'invalid options.num_ctx' })),
+    );
+    await expect(
+      collect(new OllamaProvider(async () => s.baseUrl).generate(request())),
+    ).rejects.toThrow(/PROVIDER_UNAVAILABLE: Ollama responded 400: invalid options\.num_ctx/);
+  });
+
+  it('keeps a non-JSON error body out of the way but still reports it', async () => {
+    const s = await server((_req, res) => void res.writeHead(502).end('<html>bad gateway</html>'));
+    await expect(
+      collect(new OllamaProvider(async () => s.baseUrl).generate(request())),
+    ).rejects.toThrow(/PROVIDER_UNAVAILABLE: Ollama responded 502: <html>bad gateway<\/html>/);
   });
 
   it('surfaces an in-band NDJSON error frame as PROVIDER_UNAVAILABLE after earlier deltas', async () => {
@@ -232,16 +302,81 @@ describe('GroqLlmProvider failure modes', () => {
   });
 
   it('a 200 non-SSE (e.g. captive-portal HTML) body yields zero deltas without throwing', async () => {
-    // Documents current behavior: the adapter neither checks content-type nor
-    // treats an empty stream as an error, so the coordinator would emit an
-    // empty answer-complete. Recorded here so a future content-type check is a
-    // deliberate change.
+    // Documents current behavior: the adapter does not check content-type, so
+    // the stream simply ends empty. The coordinator maps a stream with no first
+    // token to PROVIDER_UNAVAILABLE (and tries the backup) — see
+    // conversation.test.ts — so this never surfaces as an empty answer.
     const s = await server((_req, res) => {
       res.setHeader('content-type', 'text/html');
       res.end('<html><body>Hotel Wi-Fi login</body></html>');
     });
     const deltas = await collect(new GroqLlmProvider(key, s.baseUrl).generate(request()));
     expect(deltas).toEqual([]);
+  });
+
+  describe('in-band error frames after a 200 (OpenRouter/Groq upstream failures)', () => {
+    const errorFrame = (error: Record<string, unknown>) => `data: ${JSON.stringify({ error })}\n\n`;
+
+    it('maps a 429 error frame to PROVIDER_RATE_LIMITED instead of ending as an empty answer', async () => {
+      const s = await server((_req, res) => {
+        res.setHeader('content-type', 'text/event-stream');
+        res.end(errorFrame({ message: 'Provider returned error', code: 429 }));
+      });
+      await expect(
+        collect(new GroqLlmProvider(key, s.baseUrl).generate(request())),
+      ).rejects.toThrow(/PROVIDER_RATE_LIMITED/);
+    });
+
+    it('maps a 401/403 error frame to CREDENTIAL_REJECTED', async () => {
+      const s = await server((_req, res) => {
+        res.setHeader('content-type', 'text/event-stream');
+        res.end(errorFrame({ message: 'User not found.', code: 401 }));
+      });
+      await expect(
+        collect(new GroqLlmProvider(key, s.baseUrl).generate(request())),
+      ).rejects.toThrow(/CREDENTIAL_REJECTED/);
+    });
+
+    it('maps an error frame without a usable status to PROVIDER_UNAVAILABLE, keeping the message', async () => {
+      const s = await server((_req, res) => {
+        res.setHeader('content-type', 'text/event-stream');
+        res.end(
+          errorFrame({ message: 'model overloaded', type: 'server_error', code: 'overloaded' }),
+        );
+      });
+      await expect(
+        collect(new GroqLlmProvider(key, s.baseUrl).generate(request())),
+      ).rejects.toThrow(/PROVIDER_UNAVAILABLE.*model overloaded/);
+    });
+
+    it('surfaces an error frame that follows earlier deltas, keeping what was seen', async () => {
+      const s = await server((_req, res) => {
+        res.setHeader('content-type', 'text/event-stream');
+        res.end(
+          sse(['partial ']).replace('data: [DONE]\n\n', '') +
+            errorFrame({ message: 'x', code: 502 }),
+        );
+      });
+      const { items, error } = await collectUntilError(
+        new GroqLlmProvider(key, s.baseUrl).generate(request()),
+      );
+      expect(items.map((d) => d.text)).toEqual(['partial ']);
+      expect(String(error)).toMatch(/PROVIDER_UNAVAILABLE/);
+    });
+
+    it('OpenRouter: an upstream failure frame on the free router is an error, not an empty answer', async () => {
+      const s = await server((_req, res) => {
+        res.setHeader('content-type', 'text/event-stream');
+        res.end(
+          errorFrame({ message: 'Provider returned error', code: 429, metadata: { raw: '...' } }),
+        );
+      });
+      await expect(
+        collect(
+          new OpenRouterProvider(key, s.baseUrl).generate(request({ modelId: 'openrouter/free' })),
+        ),
+      ).rejects.toThrow(/PROVIDER_RATE_LIMITED/);
+    });
   });
 
   // README ("Paid model IDs are rejected by design") promises rejection, but
@@ -309,13 +444,57 @@ describe('GeminiLlmProvider failure modes', () => {
     expect(error).toBeTruthy();
   });
 
-  // Gemini signals an invalid API key with HTTP 400 (API_KEY_INVALID). probe()
-  // knows this and reports missing-credential for 400 (gemini.ts:43-49), but
-  // generate() routes 400 through mapHttpStatus, which returns
-  // PROVIDER_UNAVAILABLE (openAiCompatible.ts:20-34) — so a bad key mid-session
-  // shows "provider unavailable / switch provider" instead of "replace key".
-  // GeminiAudioProvider.transcribe has the same divergence.
-  it.fails('maps 400 (Gemini API_KEY_INVALID) to CREDENTIAL_REJECTED like probe does', async () => {
+  it('a blocked prompt (promptFeedback.blockReason, no candidates) is PROVIDER_UNAVAILABLE', async () => {
+    const s = await server((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end(
+        `data: ${JSON.stringify({ candidates: [], promptFeedback: { blockReason: 'SAFETY' } })}\n\n`,
+      );
+    });
+    await expect(
+      collect(new GeminiLlmProvider(key, s.baseUrl).generate(request())),
+    ).rejects.toThrow(/PROVIDER_UNAVAILABLE.*SAFETY/);
+  });
+
+  it('maps an in-stream error frame like a status line', async () => {
+    const s = await server((_req, res) => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.end(
+        `data: ${JSON.stringify({ error: { code: 429, message: 'Quota exceeded', status: 'RESOURCE_EXHAUSTED' } })}\n\n`,
+      );
+    });
+    await expect(
+      collect(new GeminiLlmProvider(key, s.baseUrl).generate(request())),
+    ).rejects.toThrow(/PROVIDER_RATE_LIMITED/);
+  });
+
+  // Gemini signals an invalid API key with HTTP 400 (API_KEY_INVALID), not
+  // 401; the body has to be read to tell it apart from a malformed request.
+  const keyInvalid = JSON.stringify({
+    error: {
+      code: 400,
+      message: 'API key not valid. Please pass a valid API key.',
+      status: 'INVALID_ARGUMENT',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          reason: 'API_KEY_INVALID',
+          domain: 'googleapis.com',
+        },
+      ],
+    },
+  });
+
+  it('maps 400 API_KEY_INVALID to CREDENTIAL_REJECTED like probe does', async () => {
+    const s = await server((_req, res) => void res.writeHead(400).end(keyInvalid));
+    await expect(
+      collect(new GeminiLlmProvider(key, s.baseUrl).generate(request())),
+    ).rejects.toThrow(/CREDENTIAL_REJECTED/);
+    const probe = await new GeminiLlmProvider(key, s.baseUrl).probe(new AbortController().signal);
+    expect(probe.status).toBe('missing-credential');
+  });
+
+  it('recognises the key rejection from the message alone when details are absent', async () => {
     const s = await server(
       (_req, res) =>
         void res
@@ -327,6 +506,26 @@ describe('GeminiLlmProvider failure modes', () => {
     await expect(
       collect(new GeminiLlmProvider(key, s.baseUrl).generate(request())),
     ).rejects.toThrow(/CREDENTIAL_REJECTED/);
+  });
+
+  it('leaves other 400s as PROVIDER_UNAVAILABLE (and the probe as unknown-failure)', async () => {
+    const s = await server(
+      (_req, res) =>
+        void res.writeHead(400).end(
+          JSON.stringify({
+            error: {
+              code: 400,
+              message: 'Invalid JSON payload received.',
+              status: 'INVALID_ARGUMENT',
+            },
+          }),
+        ),
+    );
+    await expect(
+      collect(new GeminiLlmProvider(key, s.baseUrl).generate(request())),
+    ).rejects.toThrow(/PROVIDER_UNAVAILABLE/);
+    const probe = await new GeminiLlmProvider(key, s.baseUrl).probe(new AbortController().signal);
+    expect(probe.status).toBe('unknown-failure');
   });
 
   // Same README promise as the Groq case: nothing stops a (corrupted or
@@ -418,6 +617,21 @@ describe('GeminiAudioProvider failure modes', () => {
 
     s.setHandler((_req, res) => void res.writeHead(503).end('{}'));
     await expect(provider.transcribe(input())).rejects.toThrow(/PROVIDER_UNAVAILABLE/);
+  });
+
+  it('maps 400 API_KEY_INVALID to CREDENTIAL_REJECTED, consistent with the LLM adapter', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'API key not valid. Please pass a valid API key.',
+        status: 'INVALID_ARGUMENT',
+        details: [{ reason: 'API_KEY_INVALID' }],
+      },
+    });
+    const s = await server((_req, res) => void res.writeHead(400).end(body));
+    const provider = new GeminiAudioProvider(key, s.baseUrl);
+    await expect(provider.transcribe(input())).rejects.toThrow(/CREDENTIAL_REJECTED/);
+    expect((await provider.probe(new AbortController().signal)).status).toBe('missing-credential');
   });
 
   it('returns empty text when Gemini responds with no candidates (e.g. safety-blocked)', async () => {

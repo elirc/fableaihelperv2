@@ -1,4 +1,4 @@
-import { SPOKEN_WORDS_PER_SECOND } from './constants';
+import { DEFAULT_TEMPERATURE, SPOKEN_WORDS_PER_SECOND } from './constants';
 import type { AnswerMode, ConversationExchange, Profile, TargetSeconds } from './domain';
 import { capText } from './streaming';
 
@@ -81,7 +81,7 @@ export function answerTokenBudget(targetSeconds: TargetSeconds): number {
  * "Try again" actually produces a different phrasing.
  */
 export function answerTemperature(mode: AnswerMode): number {
-  return mode === 'technical' || mode === 'concise' ? 0.3 : 0.6;
+  return mode === 'technical' || mode === 'concise' ? 0.3 : DEFAULT_TEMPERATURE;
 }
 
 /** Defang closing delimiters of our fenced blocks so untrusted text cannot

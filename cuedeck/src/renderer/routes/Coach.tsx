@@ -6,6 +6,7 @@ import type {
   PreferencesSection,
   PublicError,
   PublicSettings,
+  SessionOptions,
   TargetSeconds,
 } from '../../shared/domain';
 import { ENDPOINT_DEFAULTS, SilenceEndpointer } from '../../shared/endpointing';
@@ -42,6 +43,13 @@ const ERROR_ACTION_SECTION: Record<NonNullable<PublicError['action']>, Preferenc
   'switch-provider': 'providers',
 };
 
+type ExpansionIntent = 'deeper' | 'example' | 'follow-ups';
+const EXPANSION_LABELS: Record<ExpansionIntent, string> = {
+  deeper: 'More depth',
+  example: 'Example',
+  'follow-ups': 'Likely follow-ups',
+};
+
 function formatTime(ms: number): string {
   const total = Math.floor(ms / 1000);
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
@@ -55,6 +63,14 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   // landed checks it before submitting (there is no recorder left to abort).
   const cancelledSessionRef = useRef<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [detailCopied, setDetailCopied] = useState(false);
+  const [sourceAnswer, setSourceAnswer] = useState<{ question: string; answer: string } | null>(
+    null,
+  );
+  const [expansion, setExpansion] = useState<ExpansionIntent | null>(null);
+  const requestKindRef = useRef<'initial' | 'detail' | 'follow-up'>('initial');
+  const requestQuestionRef = useRef('');
+  const [activeProfileName, setActiveProfileName] = useState('');
   // The sequence remounts the live-region text so an identical message
   // ("Cancelled." twice) is announced each time, not only on first change.
   const [live, setLive] = useState({ text: '', seq: 0 });
@@ -90,13 +106,48 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   }, [settings.onboardingComplete]);
 
   useEffect(() => {
+    let active = true;
+    void window.cuedeck
+      .listProfiles()
+      .then((profiles) => {
+        if (active)
+          setActiveProfileName(profiles.find((p) => p.id === settings.activeProfileId)?.name ?? '');
+      })
+      .catch(() => {
+        if (active) setActiveProfileName('');
+      });
+    return () => {
+      active = false;
+    };
+  }, [settings]);
+
+  const clearExpansion = useCallback(() => {
+    setSourceAnswer(null);
+    setExpansion(null);
+    setCopied(false);
+    setDetailCopied(false);
+    requestKindRef.current = 'initial';
+  }, []);
+
+  useEffect(() => {
     return window.cuedeck.onSessionEvent((event) => {
       dispatch({ type: 'session-event', event });
-      if (event.type === 'answer-complete') announce('Response ready.');
-      if (event.type === 'follow-up') announce('Interviewer follow-up ready.');
+      if (event.sessionId !== sessionRef.current || event.sessionId === cancelledSessionRef.current)
+        return;
+      if (event.type === 'transcript') requestQuestionRef.current = event.text;
+      if (event.type === 'answer-complete') {
+        if (requestKindRef.current === 'initial') {
+          setSourceAnswer({ question: requestQuestionRef.current, answer: event.text });
+        }
+        announce(requestKindRef.current === 'detail' ? 'More detail ready.' : 'Response ready.');
+      }
+      if (event.type === 'follow-up') {
+        clearExpansion();
+        announce('Interviewer follow-up ready.');
+      }
       if (event.type === 'error') announce(event.error.message);
     });
-  }, []);
+  }, [announce, clearExpansion]);
 
   const stopRecording = useCallback(async () => {
     const recorder = recorderRef.current;
@@ -126,6 +177,8 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   }, [settings.sttLanguage]);
 
   const startRecording = useCallback(async () => {
+    clearExpansion();
+    requestQuestionRef.current = '';
     const sessionId = crypto.randomUUID();
     sessionRef.current = sessionId;
     dispatch({ type: 'arm', sessionId });
@@ -192,6 +245,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     settings.sttLanguage,
     stopRecording,
     announce,
+    clearExpansion,
   ]);
 
   const cancel = useCallback(async () => {
@@ -210,8 +264,10 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
   }, [announce]);
 
   const regenerate = useCallback(
-    async (overrides: Partial<{ answerMode: AnswerMode; targetSeconds: TargetSeconds }> = {}) => {
+    async (overrides: Partial<SessionOptions> = {}) => {
       if (!state.transcript.trim()) return;
+      clearExpansion();
+      requestQuestionRef.current = state.transcript;
       const sessionId = crypto.randomUUID();
       sessionRef.current = sessionId;
       const options = { ...optionsRef.current, ...overrides, sessionNotes: sessionNotesOption() };
@@ -220,12 +276,40 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
         dispatch({ type: 'capture-failed', error: asPublicError(err) });
       });
     },
-    [state.transcript],
+    [state.transcript, clearExpansion],
+  );
+
+  const expandAnswer = useCallback(
+    async (intent: ExpansionIntent) => {
+      if (
+        !sourceAnswer ||
+        sourceAnswer.question !== state.transcript ||
+        isActivePhase(state.phase) ||
+        state.phase === 'cancelling'
+      )
+        return;
+      const sessionId = crypto.randomUUID();
+      sessionRef.current = sessionId;
+      requestKindRef.current = 'detail';
+      setExpansion(intent);
+      setDetailCopied(false);
+      dispatch({ type: 'regenerate', sessionId, transcript: sourceAnswer.question });
+      await window.cuedeck
+        .regenerate(sessionId, sourceAnswer.question, {
+          ...optionsRef.current,
+          answerIntent: intent,
+          referenceAnswer: sourceAnswer.answer.slice(0, 8000),
+          sessionNotes: sessionNotesOption(),
+        })
+        .catch((err) => dispatch({ type: 'capture-failed', error: asPublicError(err) }));
+    },
+    [sourceAnswer, state.transcript, state.phase],
   );
 
   const followUp = useCallback(async () => {
     const sessionId = crypto.randomUUID();
     sessionRef.current = sessionId;
+    requestKindRef.current = 'follow-up';
     dispatch({ type: 'follow-up-requested', sessionId });
     await window.cuedeck
       .followUp(sessionId, { sessionNotes: sessionNotesOption() })
@@ -236,18 +320,28 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     // A generation still in flight would re-add its exchange when it
     // finished, undoing the clear; stop it first.
     if (isActivePhase(state.phase) || state.phase === 'cancelling') await cancel();
+    clearExpansion();
     dispatch({ type: 'reset' });
     await window.cuedeck.clearConversation().catch(() => undefined);
     dispatch({ type: 'conversation-cleared' });
     announce('Cleared. The next question starts a new conversation.');
-  }, [state.phase, cancel, announce]);
+  }, [state.phase, cancel, announce, clearExpansion]);
+
+  const displayedAnswer = expansion && sourceAnswer ? sourceAnswer.answer : state.answer;
 
   const copyAnswer = useCallback(async () => {
-    await navigator.clipboard.writeText(state.answer);
+    await navigator.clipboard.writeText(displayedAnswer);
     setCopied(true);
     announce('Response copied to clipboard.');
     window.setTimeout(() => setCopied(false), 2000);
-  }, [state.answer]);
+  }, [displayedAnswer, announce]);
+
+  const copyDetail = async () => {
+    await navigator.clipboard.writeText(state.answer);
+    setDetailCopied(true);
+    announce('Detail copied to clipboard.');
+    window.setTimeout(() => setDetailCopied(false), 2000);
+  };
 
   useEffect(() => {
     // Ctrl+L listen/stop, Esc cancel, Ctrl+Shift+C copy (see shortcuts.ts).
@@ -258,12 +352,12 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       if (action === 'start-listening') void startRecording();
       else if (action === 'stop-listening') void stopRecording();
       else if (action === 'cancel') void cancel();
-      else if (action === 'copy-answer' && state.answer) void copyAnswer();
+      else if (action === 'copy-answer' && displayedAnswer) void copyAnswer();
       else if (action === 'leave-field' && event.target instanceof HTMLElement) event.target.blur();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [state.phase, state.answer, startRecording, stopRecording, cancel, copyAnswer]);
+  }, [state.phase, displayedAnswer, startRecording, stopRecording, cancel, copyAnswer]);
 
   const setMode = async (answerMode: AnswerMode) => {
     await window.cuedeck.updatePublicSettings({ answerMode });
@@ -296,11 +390,18 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
         },
       ];
 
+  const editTranscript = (text: string) => {
+    if (state.phase === 'transcribing' || state.phase === 'generating') return;
+    if (expansion) dispatch({ type: 'reset' });
+    clearExpansion();
+    dispatch({ type: 'edit-transcript', text });
+  };
+
   const drawPracticeQuestion = () => {
     if (!deckRef.current) deckRef.current = new PracticeDeck(practiceCategory);
     const deck = deckRef.current;
     const question = deck.draw();
-    dispatch({ type: 'edit-transcript', text: question.text });
+    editTranscript(question.text);
     setDealtCount(deck.size - deck.remaining);
     announce('Practice question ready.');
   };
@@ -317,8 +418,13 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
     settings.sttProviderId === 'local-whisper' && settings.llmProviderId === 'ollama';
   const compact = settings.compactMode;
   const showSilenceWarning = isRecording && state.silentSoFar && state.elapsedMs > 3000;
+  const canExpand = Boolean(
+    sourceAnswer?.answer && sourceAnswer.question === state.transcript && !busy,
+  );
   const stats =
-    state.phase === 'complete' ? answerStats(state.answer, settings.targetSeconds) : null;
+    state.phase === 'complete' || expansion
+      ? answerStats(displayedAnswer, settings.targetSeconds)
+      : null;
   const errorAction = state.error?.action;
 
   return (
@@ -350,6 +456,23 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
       </header>
 
       <main className="coach-body">
+        <div className="personalization-strip">
+          <span data-testid="active-profile-label">
+            {activeProfileName
+              ? `Profile: ${activeProfileName}`
+              : 'Add your background for targeted answers'}
+            {settings.systemPrompt.trim() && (
+              <span className="hint"> · Personal instructions on</span>
+            )}
+          </span>
+          <button
+            className="small"
+            onClick={() => void window.cuedeck.openPreferences('profiles')}
+            data-testid="open-profiles"
+          >
+            Personalize
+          </button>
+        </div>
         <section className="card">
           <div className="capture-row">
             {!isRecording ? (
@@ -475,7 +598,10 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             )}
             <button
               className="small"
-              onClick={() => dispatch({ type: 'reset' })}
+              onClick={() => {
+                clearExpansion();
+                dispatch({ type: 'reset' });
+              }}
               data-testid="error-dismiss"
             >
               Dismiss
@@ -507,7 +633,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             <textarea
               aria-label="transcript (editable)"
               value={state.transcript}
-              onChange={(e) => dispatch({ type: 'edit-transcript', text: e.target.value })}
+              onChange={(e) => editTranscript(e.target.value)}
               readOnly={state.phase === 'transcribing' || state.phase === 'generating'}
               data-testid="transcript-input"
             />
@@ -521,7 +647,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
               <button
                 className="small"
                 onClick={() => void copyAnswer()}
-                disabled={!state.answer}
+                disabled={!displayedAnswer}
                 data-testid="copy-button"
                 title="Ctrl+Shift+C"
               >
@@ -530,7 +656,7 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
               <button
                 className="small"
                 onClick={() => void clearAll()}
-                disabled={!state.answer && !state.transcript && state.conversationDepth === 0}
+                disabled={!displayedAnswer && !state.transcript && state.conversationDepth === 0}
                 data-testid="clear-button"
                 title="Clear the cards and forget the conversation context"
               >
@@ -539,9 +665,14 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
             </span>
           </h2>
           <div className="answer-text" data-testid="answer-text">
-            {state.answer}
-            {state.phase === 'generating' && <span className="caret">&nbsp;</span>}
+            {displayedAnswer}
+            {state.phase === 'generating' && !expansion && <span className="caret">&nbsp;</span>}
           </div>
+          {!displayedAnswer && !busy && (
+            <p className="hint">
+              Start with a concise answer, then explore details and examples below.
+            </p>
+          )}
           {stats && (
             <p className="answer-stats" data-testid="answer-stats">
               ~{stats.seconds} s spoken ({stats.words} words) —{' '}
@@ -552,6 +683,32 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
                   : `shorter than your ${settings.targetSeconds} s target`}
             </p>
           )}
+          <div className="mode-row expansion-actions" role="group" aria-label="expand this answer">
+            <button
+              className="small"
+              disabled={!canExpand}
+              onClick={() => void expandAnswer('deeper')}
+              data-testid="go-deeper-button"
+            >
+              Go deeper
+            </button>
+            <button
+              className="small"
+              disabled={!canExpand}
+              onClick={() => void expandAnswer('example')}
+              data-testid="show-example-button"
+            >
+              Show an example
+            </button>
+            <button
+              className="small"
+              disabled={!canExpand}
+              onClick={() => void expandAnswer('follow-ups')}
+              data-testid="likely-follow-ups-button"
+            >
+              Likely follow-ups
+            </button>
+          </div>
           <div className="mode-row" role="group" aria-label="response follow-ups">
             <button
               className="small"
@@ -609,6 +766,39 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
           </div>
         </section>
 
+        {expansion && sourceAnswer && (
+          <section
+            className="card answer-detail"
+            aria-labelledby="answer-detail-title"
+            data-testid="answer-detail"
+          >
+            <h2 id="answer-detail-title">
+              {EXPANSION_LABELS[expansion]}
+              <span className="actions">
+                <button
+                  className="small"
+                  onClick={() => void copyDetail()}
+                  disabled={!state.answer}
+                  data-testid="copy-detail-button"
+                >
+                  {detailCopied ? 'Copied' : 'Copy detail'}
+                </button>
+              </span>
+            </h2>
+            <div className="answer-text" data-testid="answer-detail-text">
+              {state.answer}
+              {state.phase === 'generating' && requestKindRef.current === 'detail' && (
+                <span className="caret">&nbsp;</span>
+              )}
+            </div>
+            {state.phase === 'ready' && requestKindRef.current === 'detail' && (
+              <p className="hint" role="status">
+                Expansion cancelled. Your original response is above.
+              </p>
+            )}
+          </section>
+        )}
+
         {!compact && (
           <section className="card">
             <h2>
@@ -635,10 +825,10 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
 
         {!compact && (
           <section className="card">
-            <h2>Default mode</h2>
+            <h2>Default answer style</h2>
             <div className="mode-row" role="group" aria-label="answer mode">
               {(
-                ['natural', 'technical', 'concise', 'bullets', 'star', 'clarify'] as AnswerMode[]
+                ['concise', 'natural', 'technical', 'bullets', 'star', 'clarify'] as AnswerMode[]
               ).map((mode) => (
                 <button
                   key={mode}
@@ -655,6 +845,10 @@ export function Coach({ settings, onSettingsChanged }: Props): React.JSX.Element
                 </button>
               ))}
             </div>
+            <p className="hint">
+              Concise starts with the key points. Expand any completed response for depth, examples,
+              or follow-up questions.
+            </p>
           </section>
         )}
       </main>

@@ -16,6 +16,7 @@
     "test": "vitest run test/unit",
     "test:watch": "vitest test/unit",
     "test:integration": "vitest run test/integration",
+    "test:groq": "vitest run test/live/groq.live.test.ts",
     "test:e2e": "npm run build && playwright test",
     "package": "electron-forge package",
     "make": "electron-forge make",

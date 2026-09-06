@@ -225,6 +225,10 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
   const llmNeedsModel = settings.llmProviderId === 'ollama' && settings.llmModelId === '';
 
   useEffect(() => {
+    autoPicked.current = '';
+  }, [settings.llmProviderId]);
+
+  useEffect(() => {
     // Same rule as the coordinator (and onboarding): Ollama with no model
     // chosen cannot answer anything, so take the first recommended model
     // that is installed as soon as the list arrives.
@@ -260,9 +264,10 @@ function ProvidersSection({ settings, onSettingsChanged }: Props): React.JSX.Ele
           {llmProviders.find((p) => p.id === settings.llmProviderId)?.location ?? '?'})
         </p>
         <p>
-          When a cloud provider is selected, it receives: the current audio clip (STT) or
-          transcript, your active profile, role context, and session notes. Nothing else — no
-          history, no other profiles, no screen content.
+          When a cloud provider is selected, speech-to-text receives the current audio clip.
+          Responses use your transcript, personal instructions, active profile, and session notes.
+          Expansions also send the answer being expanded; conversation memory adds the last two
+          exchanges when enabled.
         </p>
         <button
           className="small"
@@ -673,6 +678,27 @@ function LocalModelPicker({
 function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Element {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [editing, setEditing] = useState<Partial<Profile> | null>(null);
+  const [systemPrompt, setSystemPrompt] = useState(settings.systemPrompt);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => setSystemPrompt(settings.systemPrompt), [settings.systemPrompt]);
+
+  const save = async (operation: () => Promise<void>, confirmation: string) => {
+    setSaving(true);
+    setMessage('');
+    setError('');
+    try {
+      await operation();
+      await onSettingsChanged();
+      setMessage(confirmation);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const refresh = async () => setProfiles(await window.cuedeck.listProfiles());
   useEffect(() => {
@@ -687,11 +713,77 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
   return (
     <>
       <h1>Profiles</h1>
-      <p>Profiles ground responses in your real background. Stored only on this computer.</p>
+      <p>Tailor answers to your background and the way you want to communicate.</p>
+      <section className="card personalization-card">
+        <h2>Personal instructions / system prompt</h2>
+        <p className="hint" id="system-prompt-help">
+          Set your preferred tone, audience, focus, and level of detail. Applies to every profile.
+          Keep factual experience in a background profile below.
+        </p>
+        <label className="field">
+          <span>Your instructions</span>
+          <textarea
+            rows={5}
+            maxLength={8000}
+            value={systemPrompt}
+            disabled={saving}
+            aria-describedby="system-prompt-help system-prompt-count"
+            placeholder="Use plain language. Tailor explanations to a senior backend engineering interview. Start with the direct answer, then add details only when I ask."
+            onChange={(e) => {
+              setSystemPrompt(e.target.value);
+              setMessage('');
+            }}
+            data-testid="system-prompt-input"
+          />
+        </label>
+        <div className="row">
+          <button
+            className="primary"
+            disabled={saving || systemPrompt === settings.systemPrompt}
+            onClick={() =>
+              void save(async () => {
+                await window.cuedeck.updatePublicSettings({ systemPrompt });
+              }, 'Personal instructions saved. They apply to your next response.')
+            }
+            data-testid="save-system-prompt"
+          >
+            Save instructions
+          </button>
+          <span className="hint" id="system-prompt-count">
+            {systemPrompt.length.toLocaleString()} / 8,000 characters
+            {systemPrompt !== settings.systemPrompt ? ' · Unsaved changes' : ''}
+          </span>
+        </div>
+        <p className="hint">
+          Leave blank to use the default guidance. Answers start concise; use Go deeper, Show an
+          example, or Likely follow-ups under a response to expand it.
+        </p>
+      </section>
+      {message && (
+        <p role="status" data-testid="personalization-saved">
+          {message}
+        </p>
+      )}
+      {error && (
+        <p className="error-banner" role="alert">
+          {error}
+        </p>
+      )}
+      <h2>Background profiles</h2>
+      <p className="hint">
+        Add real experience, skills, and role context for targeted answers. Instructions and the
+        active profile are saved on this computer and sent to your selected response provider.
+      </p>
+      {profiles.length === 0 && !editing && (
+        <p data-testid="profiles-empty">
+          Create a profile to ground answers in your own experience.
+        </p>
+      )}
       {profiles.map((p) => (
         <div
           key={p.id}
           className="card row"
+          data-testid="profile-card"
           style={{ justifyContent: 'space-between', marginBottom: 8 }}
         >
           <span>
@@ -702,23 +794,32 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
             {settings.activeProfileId !== p.id && (
               <button
                 className="small"
-                onClick={async () => {
-                  await window.cuedeck.updatePublicSettings({ activeProfileId: p.id });
-                  await onSettingsChanged();
-                }}
+                disabled={saving}
+                onClick={() =>
+                  void save(async () => {
+                    await window.cuedeck.updatePublicSettings({ activeProfileId: p.id });
+                  }, `${p.name} is now your active profile.`)
+                }
               >
                 Make active
               </button>
             )}
-            <button className="small" onClick={() => setEditing(p)}>
+            <button className="small" disabled={saving} onClick={() => setEditing(p)}>
               Edit
             </button>
             <button
               className="small danger"
-              onClick={async () => {
-                await window.cuedeck.deleteProfile(p.id);
-                await refresh();
-              }}
+              disabled={saving}
+              onClick={() =>
+                void save(async () => {
+                  await window.cuedeck.deleteProfile(p.id);
+                  if (settings.activeProfileId === p.id) {
+                    await window.cuedeck.updatePublicSettings({ activeProfileId: '' });
+                  }
+                  if (editing?.id === p.id) setEditing(null);
+                  await refresh();
+                }, 'Profile deleted.')
+              }
             >
               Delete
             </button>
@@ -731,6 +832,8 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
             <span>Name</span>
             <input
               value={editing.name ?? ''}
+              maxLength={120}
+              data-testid="profile-name"
               onChange={(e) => setEditing({ ...editing, name: e.target.value })}
             />
           </label>
@@ -739,6 +842,8 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
             <textarea
               rows={6}
               value={editing.summary ?? ''}
+              maxLength={20000}
+              data-testid="profile-summary"
               onChange={(e) => setEditing({ ...editing, summary: e.target.value })}
             />
           </label>
@@ -747,6 +852,8 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
             <textarea
               rows={4}
               value={editing.roleContext ?? ''}
+              maxLength={20000}
+              data-testid="profile-role-context"
               onChange={(e) => setEditing({ ...editing, roleContext: e.target.value })}
             />
           </label>
@@ -755,6 +862,8 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
             <textarea
               rows={2}
               value={editing.emphasisNotes ?? ''}
+              maxLength={8000}
+              data-testid="profile-emphasis"
               onChange={(e) => setEditing({ ...editing, emphasisNotes: e.target.value })}
             />
           </label>
@@ -766,26 +875,36 @@ function ProfilesSection({ settings, onSettingsChanged }: Props): React.JSX.Elem
           <div className="row">
             <button
               className="primary"
-              disabled={!(editing.name ?? '').trim()}
-              onClick={async () => {
-                await window.cuedeck.saveProfile({
-                  id: editing.id,
-                  name: (editing.name ?? '').trim(),
-                  summary: editing.summary ?? '',
-                  roleContext: editing.roleContext ?? '',
-                  emphasisNotes: editing.emphasisNotes ?? '',
-                });
-                setEditing(null);
-                await refresh();
-              }}
+              disabled={saving || !(editing.name ?? '').trim()}
+              data-testid="save-profile"
+              onClick={() =>
+                void save(async () => {
+                  const profile = await window.cuedeck.saveProfile({
+                    id: editing.id,
+                    name: (editing.name ?? '').trim(),
+                    summary: editing.summary ?? '',
+                    roleContext: editing.roleContext ?? '',
+                    emphasisNotes: editing.emphasisNotes ?? '',
+                  });
+                  await window.cuedeck.updatePublicSettings({
+                    activeProfileId: settings.activeProfileId || profile.id,
+                  });
+                  setEditing(null);
+                  await refresh();
+                }, 'Profile saved.')
+              }
             >
               Save profile
             </button>
-            <button onClick={() => setEditing(null)}>Discard</button>
+            <button disabled={saving} onClick={() => setEditing(null)}>
+              Discard
+            </button>
           </div>
         </div>
       ) : (
         <button
+          disabled={saving}
+          data-testid="new-profile"
           onClick={() => setEditing({ name: '', summary: '', roleContext: '', emphasisNotes: '' })}
         >
           New profile
@@ -1039,8 +1158,10 @@ function AboutSection(): React.JSX.Element {
         <h2>Where data lives</h2>
         <p>
           In local mode nothing leaves this computer. Optional cloud providers receive only the
-          current clip or transcript plus your active profile and notes, and each shows its data-use
-          policy before you enable it. History is off by default. There is no telemetry.
+          current clip or transcript plus your personal instructions, active profile, and notes.
+          Expansions include their reference answer; conversation memory includes recent exchanges
+          when enabled. Each provider shows its data-use policy before you enable it. History is off
+          by default. There is no telemetry.
         </p>
       </section>
     </>

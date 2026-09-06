@@ -27,6 +27,12 @@ All app data lives in the per-user application-data folder `%APPDATA%\CueDeck\` 
 
 ## What leaves this computer, and when
 
+Personal instructions (the editable system prompt) are stored as plain text in `settings.json`.
+They accompany response requests to your selected provider, alongside the active background
+profile. Clicking **Go deeper**, **Show an example**, or **Likely follow-ups** sends the original
+question and answer as context, including when conversation memory is off. These extra outputs
+are stored in history only when history is enabled, just like ordinary responses.
+
 The privileged process enforces a hardcoded outbound host allowlist
 (`src/main/security/http.ts`): any request to a host not listed below (or to the local
 machine) is refused before a network connection opens.

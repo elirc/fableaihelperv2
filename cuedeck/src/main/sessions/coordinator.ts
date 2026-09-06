@@ -2,6 +2,7 @@ import {
   ANSWER_CHAR_CAP,
   BACKUP_FIRST_TOKEN_TIMEOUT_MS,
   CONVERSATION_EXCHANGES,
+  DETAIL_ANSWER_CHAR_CAP,
   MAX_CLOUD_SPECULATIONS_PER_CLIP,
   MIN_CLIP_SECONDS,
   SILENCE_RMS_THRESHOLD,
@@ -62,6 +63,8 @@ export interface CoordinatorDeps {
     /** Default answer shape; used to pre-fill the prompt cache before a session exists. */
     answerMode?: AnswerMode;
     targetSeconds?: TargetSeconds;
+    /** User-authored response instructions, independent of factual profile data. */
+    systemPrompt?: string;
     /** Send earlier exchanges as context (default on). */
     conversationMemory?: boolean;
     /** Explicit backup response model; empty/undefined = none. */
@@ -274,6 +277,7 @@ export class SessionCoordinator {
       settings.answerMode && settings.targetSeconds
         ? buildPromptPrefix({
             profile,
+            systemPrompt: settings.systemPrompt,
             answerMode: settings.answerMode,
             targetSeconds: settings.targetSeconds,
           })
@@ -447,6 +451,8 @@ export class SessionCoordinator {
         AbortSignal.any([context.controller.signal, AbortSignal.timeout(TIMEOUTS.warmup)]),
         buildPromptPrefix({
           profile,
+          systemPrompt: settings.systemPrompt,
+          answerIntent: options.answerIntent,
           answerMode: options.answerMode,
           targetSeconds: options.targetSeconds,
         }),
@@ -750,8 +756,13 @@ export class SessionCoordinator {
   ): Promise<void> {
     this.setState(context, 'generating');
     const memoryOn = settings.conversationMemory !== false;
+    const isDetail = options.answerIntent !== undefined && options.answerIntent !== 'initial';
+    const answerCharCap = isDetail ? DETAIL_ANSWER_CHAR_CAP : ANSWER_CHAR_CAP;
     const prompt = buildPrompt({
       profile,
+      systemPrompt: settings.systemPrompt,
+      answerIntent: options.answerIntent,
+      referenceAnswer: options.referenceAnswer,
       sessionNotes: options.sessionNotes,
       transcript,
       answerMode: options.answerMode,
@@ -765,7 +776,7 @@ export class SessionCoordinator {
       prompt,
       {
         temperature: answerTemperature(options.answerMode),
-        maxTokens: answerTokenBudget(options.targetSeconds),
+        maxTokens: answerTokenBudget(options.targetSeconds, options.answerIntent),
       },
       (text) => {
         context.answer += text;
@@ -776,11 +787,11 @@ export class SessionCoordinator {
           text,
         });
       },
-      ANSWER_CHAR_CAP,
+      answerCharCap,
     );
     if (!outcome || !this.isCurrent(context)) return;
 
-    const answer = capText(context.answer, ANSWER_CHAR_CAP);
+    const answer = capText(context.answer, answerCharCap);
     const firstTokenMs =
       outcome.firstTokenAt !== undefined ? outcome.firstTokenAt - timing.startedAt : undefined;
     const metrics: SessionMetrics = {
@@ -796,7 +807,9 @@ export class SessionCoordinator {
       usedBackup: outcome.usedBackup || undefined,
     };
     this.setState(context, 'complete');
-    if (memoryOn) {
+    if (memoryOn && !isDetail) {
+      // Extra explanations and suggested follow-ups are preparation material;
+      // keep the original spoken answer as the remembered exchange.
       // Emitted before answer-complete so the latter stays the final event
       // of every successful session (the renderer and tests rely on it).
       this.recordExchange(transcript, answer);
@@ -822,7 +835,7 @@ export class SessionCoordinator {
             sttModelId: timing.sttModelId ?? '',
             llmProviderId: outcome.providerId,
             llmModelId: outcome.modelId,
-            answerMode: options.answerMode,
+            answerMode: isDetail ? options.answerIntent! : options.answerMode,
             timings: {
               encodeMs: timing.encodeMs,
               transcribeMs: timing.transcribeMs,

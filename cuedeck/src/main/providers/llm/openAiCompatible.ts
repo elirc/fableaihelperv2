@@ -78,6 +78,7 @@ export async function* streamChatCompletions(options: {
   extraHeaders?: Record<string, string>;
   /** Extra JSON fields for the request body (see `requestExtras`). */
   extraBody?: Record<string, unknown>;
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
   request: AnswerRequest;
 }): AsyncIterable<AnswerDelta> {
   const { baseUrl, apiKey, providerName, request } = options;
@@ -96,7 +97,7 @@ export async function* streamChatCompletions(options: {
         // Without these the provider default applies (temperature 1.0 on
         // most OpenAI-compatible hosts) — far too loose for technical answers.
         temperature: request.temperature ?? DEFAULT_TEMPERATURE,
-        max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
+        [options.maxTokensField ?? 'max_tokens']: request.maxTokens ?? DEFAULT_MAX_TOKENS,
         messages: [
           { role: 'system', content: request.system },
           { role: 'user', content: request.user },
@@ -220,6 +221,8 @@ export interface OpenAiCompatibleDescriptor {
   /** Models offered in the UI when the provider pins a fixed free set. */
   models: ModelSummary[];
   extraHeaders?: Record<string, string>;
+  /** Current token-budget field for the host; older compatible APIs use max_tokens. */
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
   /** Throw a CoachError before any request when the model is not permitted. */
   assertModelAllowed?: (modelId: string) => void;
   /** Authenticated GET used by probe and warmup; see `DEFAULT_PROBE_PATH`. */
@@ -289,6 +292,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
       providerName: this.descriptor.providerName,
       extraHeaders: this.descriptor.extraHeaders,
       extraBody: this.descriptor.requestExtras?.(input.modelId, input),
+      maxTokensField: this.descriptor.maxTokensField,
       request: input,
     });
   }

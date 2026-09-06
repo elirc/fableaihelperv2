@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { CLOUD_MODELS } from '../../shared/catalog';
+import { DEFAULT_SETTINGS } from '../../shared/constants';
 import type { PublicSettings } from '../../shared/domain';
 import { publicSettingsPatchSchema } from '../../shared/schemas';
 import { readJsonFile, writeJsonFile } from '../storage/jsonFile';
@@ -32,6 +34,27 @@ export class PublicSettingsStore {
     const patch = publicSettingsPatchSchema.parse(rawPatch);
     const current = await this.load();
     const next: PublicSettings = { ...current, ...patch };
+    // A provider-only change must not carry a model from the previous
+    // provider. Preferences and the local-only shortcut both use this path.
+    if (
+      patch.sttProviderId !== undefined &&
+      patch.sttProviderId !== current.sttProviderId &&
+      patch.sttModelId === undefined
+    ) {
+      const defaults: Record<string, string> = {
+        'local-whisper': DEFAULT_SETTINGS.sttModelId,
+        'groq-whisper': CLOUD_MODELS.groqSttModel,
+        'gemini-audio': CLOUD_MODELS.geminiModel,
+      };
+      next.sttModelId = defaults[patch.sttProviderId] ?? current.sttModelId;
+    }
+    if (
+      patch.llmProviderId !== undefined &&
+      patch.llmProviderId !== current.llmProviderId &&
+      patch.llmModelId === undefined
+    ) {
+      next.llmModelId = '';
+    }
     return this.replace(next);
   }
 

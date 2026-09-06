@@ -111,6 +111,17 @@ response card streams in. Settings live in a separate Preferences window.
 
 Everything is tuned for one loop: someone asks a question, you get a speakable response fast.
 
+- **Personal instructions / system prompt**: open **Personalize** on the Coach window or
+  **Preferences → Profiles**. Set the tone, audience, technologies, and focus you want, then
+  **Save instructions**. These instructions apply across profiles. Put your actual background,
+  projects, skills, and target role in a background profile, and select it as active.
+- **Concise first, more detail on demand**: new setups default to Concise with a 30-second
+  speaking target. Existing saved styles are preserved. Under a completed response, choose
+  **Go deeper**, **Show an example**, or **Likely follow-ups** (questions with sample answers).
+  The original answer stays visible while the extra detail streams separately. These actions
+  use the original question and answer even with conversation memory off; they do not replace
+  the spoken answer in conversation memory. Edit the question and generate a new answer to
+  start a different thread of examples. You can still choose other styles and lengths.
 - **Auto-respond on pause** (on by default, toggleable): while listening, the app watches the
   audio level and stops + submits by itself once the speaker has paused for the chosen length
   (quick 1.0 s / normal 1.6 s / patient 2.4 s, selectable next to the toggle) — no

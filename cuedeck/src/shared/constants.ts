@@ -81,6 +81,9 @@ export const CAPTURE_GRANT_TTL_MS = 8_000;
 /** Model-independent cap applied to generated answers (characters). */
 export const ANSWER_CHAR_CAP = 4_000;
 
+/** Explicit explanations/examples have enough room to finish steps and code. */
+export const DETAIL_ANSWER_CHAR_CAP = 8_000;
+
 /**
  * How many earlier question/answer pairs travel with each request so
  * follow-ups ("and how would you scale that?") are answered in context.
@@ -148,8 +151,9 @@ export const DEFAULT_SETTINGS: PublicSettings = {
   sttLanguage: 'auto',
   llmProviderId: 'ollama',
   llmModelId: '',
-  answerMode: 'natural',
+  answerMode: 'concise',
   targetSeconds: 30,
+  systemPrompt: '',
   fontScale: 1,
   maxClipSeconds: DEFAULT_MAX_CLIP_SECONDS,
   autoStopOnSilence: true,

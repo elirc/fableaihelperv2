@@ -16,6 +16,9 @@ import {
 describe('publicSettingsSchema', () => {
   it('accepts the defaults', () => {
     expect(publicSettingsSchema.parse(DEFAULT_SETTINGS)).toBeTruthy();
+    expect(DEFAULT_SETTINGS.answerMode).toBe('concise');
+    expect(DEFAULT_SETTINGS.targetSeconds).toBe(30);
+    expect(DEFAULT_SETTINGS.systemPrompt).toBe('');
   });
 
   it('rejects out-of-range font scale and clip length', () => {
@@ -82,6 +85,21 @@ describe('targetSecondsSchema', () => {
 });
 
 describe('publicSettingsPatchSchema', () => {
+  it('accepts, clears, and bounds the custom system prompt without changing unrelated patches', () => {
+    expect(publicSettingsPatchSchema.parse({ systemPrompt: 'Use TypeScript examples.' })).toEqual({
+      systemPrompt: 'Use TypeScript examples.',
+    });
+    expect(publicSettingsPatchSchema.parse({ systemPrompt: '' })).toEqual({ systemPrompt: '' });
+    expect(publicSettingsPatchSchema.safeParse({ systemPrompt: 'x'.repeat(8_000) }).success).toBe(
+      true,
+    );
+    expect(publicSettingsPatchSchema.safeParse({ systemPrompt: 'x'.repeat(8_001) }).success).toBe(
+      false,
+    );
+    expect(publicSettingsPatchSchema.safeParse({ systemPrompt: 1 }).success).toBe(false);
+    expect(publicSettingsPatchSchema.parse({ fontScale: 1.2 })).not.toHaveProperty('systemPrompt');
+  });
+
   it('rejects attempts to write credential flags from the renderer', () => {
     const result = publicSettingsPatchSchema.safeParse({
       credentials: { groq: { configured: true } },
@@ -146,6 +164,46 @@ describe('sessionSubmitMetaSchema', () => {
 });
 
 describe('sessionOptionsSchema', () => {
+  it('keeps old initial-answer requests valid', () => {
+    const initial = { answerMode: 'concise', targetSeconds: 30 };
+    expect(sessionOptionsSchema.parse(initial)).toEqual(initial);
+    expect(sessionOptionsSchema.safeParse({ ...initial, answerIntent: 'initial' }).success).toBe(
+      true,
+    );
+  });
+
+  it.each(['deeper', 'example', 'follow-ups'] as const)(
+    'requires an existing answer for the %s expansion',
+    (answerIntent) => {
+      const base = { answerMode: 'concise', targetSeconds: 30, answerIntent };
+      expect(sessionOptionsSchema.safeParse(base).success).toBe(false);
+      expect(sessionOptionsSchema.safeParse({ ...base, referenceAnswer: '   ' }).success).toBe(
+        false,
+      );
+      expect(sessionOptionsSchema.parse({ ...base, referenceAnswer: 'Use a queue.' })).toEqual({
+        ...base,
+        referenceAnswer: 'Use a queue.',
+      });
+    },
+  );
+
+  it('bounds the reference answer and rejects unknown intents', () => {
+    const base = { answerMode: 'concise', targetSeconds: 30, answerIntent: 'deeper' };
+    expect(
+      sessionOptionsSchema.safeParse({ ...base, referenceAnswer: 'x'.repeat(8_000) }).success,
+    ).toBe(true);
+    expect(
+      sessionOptionsSchema.safeParse({ ...base, referenceAnswer: 'x'.repeat(8_001) }).success,
+    ).toBe(false);
+    expect(
+      sessionOptionsSchema.safeParse({
+        ...base,
+        answerIntent: 'anything',
+        referenceAnswer: 'Answer',
+      }).success,
+    ).toBe(false);
+  });
+
   it('caps session notes at 4000 characters', () => {
     const base = { answerMode: 'natural', targetSeconds: 30 } as const;
     expect(

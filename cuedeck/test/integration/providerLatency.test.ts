@@ -244,15 +244,17 @@ describe('reasoning controls for gpt-oss free-tier models', () => {
     expect(sent.reasoning_effort).toBe('low');
     expect(sent.include_reasoning).toBe(false);
     expect(sent.model).toBe(CLOUD_MODELS.groqLlmModel);
-    // Hidden reasoning counts against max_tokens; the visible budget keeps its headroom.
-    expect(sent.max_tokens).toBe(DEFAULT_MAX_TOKENS + REASONING_TOKEN_HEADROOM);
+    // Hidden reasoning counts against the completion budget; keep room for the visible answer.
+    expect(sent.max_completion_tokens).toBe(DEFAULT_MAX_TOKENS + REASONING_TOKEN_HEADROOM);
+    expect(sent).not.toHaveProperty('max_tokens');
   });
 
   it('Groq: non-gpt-oss models get no reasoning fields (the API rejects them)', async () => {
     const sent = await captureBody((u) => new GroqLlmProvider(key, u), 'qwen/qwen3.6-27b');
     expect(sent).not.toHaveProperty('reasoning_effort');
     expect(sent).not.toHaveProperty('include_reasoning');
-    expect(sent.max_tokens).toBe(DEFAULT_MAX_TOKENS);
+    expect(sent.max_completion_tokens).toBe(DEFAULT_MAX_TOKENS);
+    expect(sent).not.toHaveProperty('max_tokens');
   });
 
   it('Cerebras: gpt-oss requests ask for low effort only; gemma is untouched', async () => {
@@ -274,7 +276,7 @@ describe('reasoning controls for gpt-oss free-tier models', () => {
     expect(groqRequestExtras('openai/gpt-oss-20b', tight)).toEqual({
       reasoning_effort: 'low',
       include_reasoning: false,
-      max_tokens: 160 + REASONING_TOKEN_HEADROOM,
+      max_completion_tokens: 160 + REASONING_TOKEN_HEADROOM,
     });
     expect(groqRequestExtras('whatever', tight)).toEqual({});
     expect(cerebrasRequestExtras('gpt-oss-120b', {})).toEqual({

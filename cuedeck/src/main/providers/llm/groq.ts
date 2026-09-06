@@ -20,7 +20,7 @@ export function groqRequestExtras(
   return {
     reasoning_effort: 'low',
     include_reasoning: false,
-    max_tokens: (request.maxTokens ?? DEFAULT_MAX_TOKENS) + REASONING_TOKEN_HEADROOM,
+    max_completion_tokens: (request.maxTokens ?? DEFAULT_MAX_TOKENS) + REASONING_TOKEN_HEADROOM,
   };
 }
 
@@ -31,6 +31,7 @@ export class GroqLlmProvider extends OpenAiCompatibleLlmProvider {
         meta: PROVIDERS.groq,
         baseUrl,
         providerName: 'Groq',
+        maxTokensField: 'max_completion_tokens',
         models: [
           {
             id: CLOUD_MODELS.groqLlmModel,

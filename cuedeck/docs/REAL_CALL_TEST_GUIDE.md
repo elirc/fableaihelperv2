@@ -1,5 +1,9 @@
 # Real-call test guide (production build, Groq free tier)
 
+For the current packaged build, editable system prompt, concise answers, and expansion controls,
+start with the [final test checklist](FINAL_TEST_CHECKLIST.md). It includes a prepared speech
+sample, pass/fail criteria, and the optional live Groq test command.
+
 The full runbook for the first test of the **installed** CueDeck build, using one free Groq key
 for both speech-to-text and responses. Every screen name, button label, and message quoted here
 is the literal text in the app, so you can match what you see against what should happen.

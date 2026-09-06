@@ -272,6 +272,7 @@ a {
 
 .answer-text {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font-size: 1.08em;
   min-height: 44px;
 }
@@ -318,6 +319,40 @@ a {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.personalization-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.personalization-strip > span {
+  overflow-wrap: anywhere;
+}
+
+.personalization-card {
+  margin-bottom: 16px;
+}
+
+.personalization-card .field {
+  margin-top: 12px;
+}
+
+.expansion-actions {
+  margin: 12px 0 10px;
+}
+
+.expansion-actions button {
+  border-color: var(--accent-strong);
+}
+
+.answer-detail {
+  border-left: 3px solid var(--accent);
 }
 
 .status-rail {

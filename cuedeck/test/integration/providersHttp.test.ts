@@ -6,6 +6,8 @@ import { OpenRouterProvider } from '../../src/main/providers/llm/openRouter';
 import { GroqWhisperProvider } from '../../src/main/providers/stt/groqWhisper';
 import { GeminiAudioProvider } from '../../src/main/providers/stt/geminiAudio';
 import type { AnswerRequest } from '../../src/main/providers/contracts';
+import { CLOUD_MODELS, STT_TECHNICAL_GLOSSARY } from '../../src/shared/catalog';
+import { REASONING_TOKEN_HEADROOM } from '../../src/shared/constants';
 import { collect, startFakeServer, writeChunked, type FakeServer } from '../helpers/fakeServer';
 import { sineWav } from '../helpers/wav';
 
@@ -149,6 +151,49 @@ describe('GroqLlmProvider (OpenAI-compatible SSE)', () => {
     expect(deltas.map((d) => d.sequence)).toEqual([0, 1, 2]);
   });
 
+  it.each([CLOUD_MODELS.groqLlmModel, CLOUD_MODELS.groqLlmFastModel])(
+    'sends personalized instructions and the requested answer budget to %s',
+    async (modelId) => {
+      const s = await server((_req, res) => void res.end(sse(['A targeted answer.'])));
+      const input = request({
+        modelId,
+        system: 'Keep the first answer concise. Prefer C# examples for this user.',
+        user: '<profile_summary>Backend developer using .NET.</profile_summary>\nExplain async.',
+        maxTokens: 240,
+        temperature: 0.25,
+      });
+      await collect(new GroqLlmProvider(key, `${s.baseUrl}/openai/v1/`).generate(input));
+      expect(s.requests[0].url).toBe('/openai/v1/chat/completions');
+      const sent = JSON.parse(s.requests[0].body.toString());
+      expect(sent).toMatchObject({
+        model: modelId,
+        stream: true,
+        temperature: 0.25,
+        max_completion_tokens: 240 + REASONING_TOKEN_HEADROOM,
+        reasoning_effort: 'low',
+        include_reasoning: false,
+        messages: [
+          { role: 'system', content: input.system },
+          { role: 'user', content: input.user },
+        ],
+      });
+      expect(sent).not.toHaveProperty('max_tokens');
+    },
+  );
+
+  it('keeps reasoning-only and usage frames out of the displayed answer', async () => {
+    const s = await server((_req, res) => {
+      res.end(
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning: 'hidden' } }] })}\n\n` +
+          `data: ${JSON.stringify({ choices: [{ delta: { content: 'Visible answer.' } }] })}\n\n` +
+          `data: ${JSON.stringify({ choices: [], x_groq: { usage: { completion_tokens: 25 } } })}\n\n` +
+          'data: [DONE]\n\n',
+      );
+    });
+    const deltas = await collect(new GroqLlmProvider(key, s.baseUrl).generate(request()));
+    expect(deltas).toEqual([{ text: 'Visible answer.', sequence: 0 }]);
+  });
+
   it('processes a final SSE frame with no trailing newline', async () => {
     const s = await server((_req, res) => {
       const body =
@@ -234,7 +279,13 @@ describe('GroqWhisperProvider', () => {
     const s = await server((req, res) => {
       expect(req.url).toBe('/audio/transcriptions');
       expect(req.headers['content-type']).toContain('multipart/form-data');
+      expect(req.headers.authorization).toBe('Bearer test-key-123');
       expect(req.body.length).toBeGreaterThan(1000);
+      const multipart = req.body.toString();
+      expect(multipart).toContain('name="model"\r\n\r\nwhisper-large-v3-turbo');
+      expect(multipart).toContain('name="response_format"\r\n\r\nverbose_json');
+      expect(multipart).toContain(`name="prompt"\r\n\r\n${STT_TECHNICAL_GLOSSARY}`);
+      expect(multipart).not.toContain('name="language"');
       res.end(
         JSON.stringify({
           text: ' Hello there. ',

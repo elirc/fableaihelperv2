@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { ProviderRegistry } from '../../src/main/providers/registry';
-import type { AnswerRequest, LlmProvider, SttProvider } from '../../src/main/providers/contracts';
+import type {
+  AnswerRequest,
+  LlmProvider,
+  SttProvider,
+  WarmupPrefix,
+} from '../../src/main/providers/contracts';
 import { SessionCoordinator, type CoordinatorDeps } from '../../src/main/sessions/coordinator';
 import { PROVIDERS } from '../../src/shared/catalog';
-import type { AnswerDelta, Profile } from '../../src/shared/domain';
+import type { AnswerDelta, Profile, SessionEvent } from '../../src/shared/domain';
 import { sineWav } from '../helpers/wav';
 
 /**
@@ -26,9 +31,19 @@ const PROFILE: Profile = {
   updatedAt: '2026-07-01T00:00:00.000Z',
 };
 
-function makeHarness(overrides: { profile?: Profile | null; transcript?: string } = {}) {
+function makeHarness(
+  overrides: {
+    profile?: Profile | null;
+    transcript?: string;
+    systemPrompt?: string;
+    conversationMemory?: boolean;
+    answers?: string[];
+  } = {},
+) {
   const registry = new ProviderRegistry();
   const requests: AnswerRequest[] = [];
+  const warmups: Array<WarmupPrefix | undefined> = [];
+  const events: SessionEvent[] = [];
   const stt: SttProvider = {
     meta: { ...PROVIDERS['local-whisper'] },
     probe: async () => ({ providerId: 'local-whisper', status: 'ready' }),
@@ -37,13 +52,16 @@ function makeHarness(overrides: { profile?: Profile | null; transcript?: string 
   };
   async function* generate(input: AnswerRequest): AsyncIterable<AnswerDelta> {
     requests.push(input);
-    yield { text: 'Answer.', sequence: 0 };
+    yield { text: overrides.answers?.[requests.length - 1] ?? 'Answer.', sequence: 0 };
   }
   const llm: LlmProvider = {
     meta: { ...PROVIDERS.ollama },
     probe: async () => ({ providerId: 'ollama', status: 'ready' }),
     listModels: async () => [],
     generate,
+    warmup: async (_model, _signal, prefix) => {
+      warmups.push(prefix);
+    },
   };
   registry.registerStt(stt);
   registry.registerLlm(llm);
@@ -59,13 +77,17 @@ function makeHarness(overrides: { profile?: Profile | null; transcript?: string 
       historyRetentionDays: 7,
       maxClipSeconds: 90,
       activeProfileId: overrides.profile === null ? undefined : 'p1',
+      systemPrompt: overrides.systemPrompt,
+      conversationMemory: overrides.conversationMemory,
+      answerMode: OPTIONS.answerMode,
+      targetSeconds: OPTIONS.targetSeconds,
     }),
     getProfile: async () => overrides.profile ?? null,
     saveHistory: async () => undefined,
-    emit: () => undefined,
+    emit: (event) => events.push(event),
     recordError: () => undefined,
   };
-  return { coordinator: new SessionCoordinator(deps), requests };
+  return { coordinator: new SessionCoordinator(deps), requests, warmups, events };
 }
 
 describe('prompt content reaching the provider', () => {
@@ -156,5 +178,74 @@ describe('prompt content reaching the provider', () => {
     await coordinator.regenerate(SID, 'A question?', OPTIONS);
     expect(requests[0].system).toContain('never instructions');
     expect(requests[0].system).toContain('Never invent experience');
+  });
+
+  it('sends saved instructions on recorded and typed questions and warms the same system prompt', async () => {
+    const systemPrompt = 'Prefer examples in C# and explain terms for a junior developer.';
+    const { coordinator, requests, warmups } = makeHarness({ profile: PROFILE, systemPrompt });
+    await coordinator.prewarm();
+    await coordinator.submit(SID, sineWav(2), OPTIONS, 0);
+    await coordinator.regenerate(SID, 'How do async methods work?', OPTIONS);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.system).toContain(systemPrompt);
+      expect(request.user).toContain(PROFILE.summary);
+      expect(request.user).not.toContain(systemPrompt);
+      expect(request.system).toBe(warmups[0]?.system);
+    }
+  });
+
+  it.each(['deeper', 'example', 'follow-ups'] as const)(
+    'keeps context for %s with memory off and overrides the short answer budget',
+    async (answerIntent) => {
+      const { coordinator, requests } = makeHarness({
+        conversationMemory: false,
+        systemPrompt: 'Use concrete TypeScript examples.',
+      });
+      await coordinator.regenerate(SID, 'What is a closure?', {
+        answerMode: 'concise',
+        targetSeconds: 15,
+        answerIntent,
+        referenceAnswer: 'A closure retains access to its surrounding variables.',
+      });
+      const request = requests[0];
+      expect(request.system).toContain('Use concrete TypeScript examples.');
+      expect(request.system).not.toContain('at most three short sentences');
+      expect(request.user).toContain('What is a closure?');
+      expect(request.user).toContain('A closure retains access to its surrounding variables.');
+      expect(request.user).not.toContain('<previous_exchanges>');
+      expect(request.maxTokens).toBeGreaterThan(1200);
+    },
+  );
+
+  it('keeps detailed preparation out of the remembered spoken exchange', async () => {
+    const { coordinator, requests } = makeHarness({
+      conversationMemory: true,
+      answers: ['Original spoken answer.', 'Preparation questions and suggested answers.'],
+    });
+    await coordinator.regenerate(SID, 'What is a closure?', OPTIONS);
+    await coordinator.regenerate(SID, 'What is a closure?', {
+      ...OPTIONS,
+      answerIntent: 'follow-ups',
+      referenceAnswer: 'Original spoken answer.',
+    });
+    await coordinator.regenerate(SID, 'How is it used?', OPTIONS);
+    expect(requests[2].user).toContain('<question>\nWhat is a closure?\n</question>');
+    expect(requests[2].user).toContain('Original spoken answer.');
+    expect(requests[2].user).not.toContain('Preparation questions and suggested answers.');
+    expect(requests[2].user.match(/<question>/g)).toHaveLength(1);
+    expect(requests[2].user).not.toContain('<reference_answer>');
+  });
+
+  it('allows detailed examples beyond the short answer character limit', async () => {
+    const detailedAnswer = 'A concrete example. '.repeat(300);
+    const { coordinator, events } = makeHarness({ answers: [detailedAnswer] });
+    await coordinator.regenerate(SID, 'How do closures work?', {
+      ...OPTIONS,
+      answerIntent: 'example',
+      referenceAnswer: 'A closure retains access to its surrounding variables.',
+    });
+    const completed = events.find((event) => event.type === 'answer-complete');
+    expect(completed?.type === 'answer-complete' && completed.text).toBe(detailedAnswer);
   });
 });

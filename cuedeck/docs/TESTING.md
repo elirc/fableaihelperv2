@@ -8,6 +8,7 @@ CueDeck has three test tiers plus a small set of shared helpers. The split is un
 npm test                 # unit tier        (vitest run test/unit)
 npm run test:watch       # unit tier, watch mode
 npm run test:integration # integration tier (vitest run test/integration)
+npm run test:groq        # opt-in live Groq checks; needs GROQ_API_KEY
 npm run test:e2e         # npm run build, then playwright test (test/e2e)
 npm run check            # format + lint + typecheck + unit + integration (NOT e2e)
 ```
@@ -17,6 +18,33 @@ Notes:
 - `test:e2e` **builds first** — Playwright launches `.vite/build/main.js` directly (`test/e2e/helpers.ts`), so a stale build means you are testing old code. If e2e results look impossible, rebuild.
 - e2e runs with `workers: 1, fullyParallel: false` (`playwright.config.ts`) because each Electron launch owns a user-data dir; keep it serial.
 - The vitest `testTimeout` is 15 s; Playwright's per-test timeout is 60 s.
+
+### Live Groq verification
+
+`npm run test:groq` tests the actual Groq adapters against `api.groq.com` using
+`GROQ_API_KEY` from the invoking process environment. Supply the key through your
+local environment or secret manager; do not commit it or paste it into test files.
+This environment variable is used only by the test tooling. The app continues to
+read credentials from its encrypted vault in Preferences → Providers.
+
+The suite checks authentication for both adapters, then streams a concise answer
+and a fuller worked example from each of the two catalog response models. It uses
+the application's prompt builder with a synthetic C#/ASP.NET Core profile and
+custom instructions. It checks useful output, sequence numbers, initial brevity,
+and whether the example is longer and uses the requested technology. It logs only
+timing and word counts. These are smoke checks; a pass does not replace reviewing
+answer accuracy. Requests consume the key's normal Groq quota.
+
+To also test speech transcription, set `CUEDECK_GROQ_AUDIO` to a short WAV or FLAC
+file containing spoken words. That explicitly opts in to uploading the file to
+Groq. Without a key the entire live suite is **skipped**, and without an audio path
+the transcription check is **skipped**. A skipped run is not live verification.
+The normal unit/integration commands never contact Groq.
+
+The response adapter uses Groq's current `max_completion_tokens` field, retaining
+reasoning headroom for GPT-OSS models. See the official
+[API reference](https://console.groq.com/docs/api-reference) and
+[reasoning controls](https://console.groq.com/docs/reasoning).
 
 ## Tier 1: unit tests (`test/unit/`)
 
@@ -77,6 +105,13 @@ The rationale for every test added in the 2026-07 feature round (auto-stop endpo
 Selectors are exclusively `data-testid` (`listen-button`, `transcript-input`, `answer-text`, `phase-chip`, `error-banner`, ...). When you add UI, add test ids at the same time.
 
 One real-world gap to know: no e2e test presses the actual **Listen** button, because that requires real system-audio loopback capture on the CI machine. The capture path is covered piecewise — grant logic in unit tests, denial-without-grant in e2e, everything downstream of the WAV in the integration pipeline — while the workflow e2e tests enter through the editable transcript + Regenerate instead.
+
+`test/e2e/personalization.spec.ts` covers saving and clearing personal instructions, creating
+and activating a background profile, verifying both in provider requests, and expanding a
+concise answer with conversation memory disabled. It also checks separate copying of the
+original answer and detail, cancellation and retry, and clearing stale context after editing
+the question. Prompt/schema/store unit tests and `promptFlow.test.ts` cover persistence across
+store reloads, input limits, reference fencing, expansion budgets, and conversation memory.
 
 ## Choosing a tier for a new test
 

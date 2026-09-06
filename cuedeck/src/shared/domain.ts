@@ -13,6 +13,9 @@ export type FreePolicy = 'always-free-local' | 'provider-free-tier';
  *  'technical' = answer-first structure for knowledge questions). */
 export type AnswerMode = 'natural' | 'concise' | 'bullets' | 'star' | 'clarify' | 'technical';
 
+/** Initial answer or an explicit request to explore an existing answer. */
+export type AnswerIntent = 'initial' | 'deeper' | 'example' | 'follow-ups';
+
 /** Desired spoken length of the generated answer, in seconds. */
 export type TargetSeconds = 15 | 30 | 60 | 90 | 120;
 
@@ -237,6 +240,8 @@ export interface PublicSettings {
   llmModelId: string;
   answerMode: AnswerMode;
   targetSeconds: TargetSeconds;
+  /** User-authored response instructions, separate from factual profile data. */
+  systemPrompt: string;
   fontScale: number;
   maxClipSeconds: number;
   /** Stop and submit automatically when the speaker pauses (endpointing). */
@@ -277,6 +282,9 @@ export interface AppCapabilities {
 export interface SessionOptions {
   answerMode: AnswerMode;
   targetSeconds: TargetSeconds;
+  answerIntent?: AnswerIntent;
+  /** The existing answer to expand; reference material, never personal evidence. */
+  referenceAnswer?: string;
   language?: string;
   sessionNotes?: string;
 }

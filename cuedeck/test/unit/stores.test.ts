@@ -27,6 +27,30 @@ const fakeSafeStorage: SafeStorageLike = {
 };
 
 describe('migrateSettings', () => {
+  it('adds an empty system prompt to older settings without replacing saved choices', () => {
+    const migrated = migrateSettings({
+      schemaVersion: 1,
+      answerMode: 'technical',
+      targetSeconds: 90,
+      llmProviderId: 'groq',
+      llmModelId: CLOUD_MODELS.groqLlmModel,
+      activeProfileId: 'backend',
+      credentials: { groq: { configured: true } },
+    });
+    expect(migrated.systemPrompt).toBe('');
+    expect(migrated.answerMode).toBe('technical');
+    expect(migrated.targetSeconds).toBe(90);
+    expect(migrated.llmProviderId).toBe('groq');
+    expect(migrated.activeProfileId).toBe('backend');
+    expect(migrated.credentials.groq.configured).toBe(true);
+  });
+
+  it('preserves a saved custom prompt during settings migration', () => {
+    expect(
+      migrateSettings({ ...DEFAULT_SETTINGS, systemPrompt: 'Explain using Python.' }).systemPrompt,
+    ).toBe('Explain using Python.');
+  });
+
   it('returns defaults for corrupt input', () => {
     expect(migrateSettings('garbage')).toEqual(DEFAULT_SETTINGS);
     expect(migrateSettings(null)).toEqual(DEFAULT_SETTINGS);
@@ -93,6 +117,64 @@ describe('migrateSettings', () => {
 });
 
 describe('PublicSettingsStore', () => {
+  it('chooses a compatible speech model when changing providers after setup', async () => {
+    const store = new PublicSettingsStore(dir);
+    await store.patch({ onboardingComplete: true });
+    expect((await store.patch({ sttProviderId: 'groq-whisper' })).sttModelId).toBe(
+      CLOUD_MODELS.groqSttModel,
+    );
+    expect((await store.patch({ sttProviderId: 'gemini-audio' })).sttModelId).toBe(
+      CLOUD_MODELS.geminiModel,
+    );
+    expect((await store.patch({ sttProviderId: 'local-whisper' })).sttModelId).toBe(
+      DEFAULT_SETTINGS.sttModelId,
+    );
+    expect((await new PublicSettingsStore(dir).get()).sttModelId).toBe(DEFAULT_SETTINGS.sttModelId);
+  });
+
+  it('resets both incompatible models when switching everything back to local-only', async () => {
+    const store = new PublicSettingsStore(dir);
+    await store.patch({
+      sttProviderId: 'groq-whisper',
+      sttModelId: CLOUD_MODELS.groqSttModel,
+      llmProviderId: 'groq',
+      llmModelId: CLOUD_MODELS.groqLlmModel,
+    });
+    const settings = await store.patch({ sttProviderId: 'local-whisper', llmProviderId: 'ollama' });
+    expect(settings.sttModelId).toBe(DEFAULT_SETTINGS.sttModelId);
+    expect(settings.llmModelId).toBe('');
+    const restored = await new PublicSettingsStore(dir).get();
+    expect(restored.sttModelId).toBe(DEFAULT_SETTINGS.sttModelId);
+    expect(restored.llmModelId).toBe('');
+  });
+
+  it('preserves explicit model choices and models for an unchanged provider', async () => {
+    const store = new PublicSettingsStore(dir);
+    await store.patch({
+      sttProviderId: 'groq-whisper',
+      sttModelId: 'whisper-large-v3',
+      llmProviderId: 'groq',
+      llmModelId: CLOUD_MODELS.groqLlmFastModel,
+    });
+    const settings = await store.patch({ sttProviderId: 'groq-whisper', llmProviderId: 'groq' });
+    expect(settings.sttModelId).toBe('whisper-large-v3');
+    expect(settings.llmModelId).toBe(CLOUD_MODELS.groqLlmFastModel);
+    expect((await store.patch({ llmProviderId: 'gemini' })).llmModelId).toBe('');
+  });
+
+  it('persists custom instructions across reloads and unrelated patches, and allows clearing them', async () => {
+    const store = new PublicSettingsStore(dir);
+    await store.patch({ systemPrompt: 'Use examples relevant to backend engineering.' });
+    await store.patch({ answerMode: 'technical' });
+    const reread = new PublicSettingsStore(dir);
+    expect((await reread.get()).systemPrompt).toBe('Use examples relevant to backend engineering.');
+    expect((await reread.get()).answerMode).toBe('technical');
+    await expect(reread.patch({ systemPrompt: 'x'.repeat(8_001) })).rejects.toThrow();
+    expect((await reread.get()).systemPrompt).toBe('Use examples relevant to backend engineering.');
+    await reread.patch({ systemPrompt: '' });
+    expect((await new PublicSettingsStore(dir).get()).systemPrompt).toBe('');
+  });
+
   it('persists patches and enforces the patch schema', async () => {
     const store = new PublicSettingsStore(dir);
     await store.patch({ alwaysOnTop: true });

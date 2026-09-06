@@ -9,6 +9,7 @@ export const answerModeSchema = z.enum([
   'clarify',
   'technical',
 ]);
+export const answerIntentSchema = z.enum(['initial', 'deeper', 'example', 'follow-ups']);
 export const targetSecondsSchema = z.union([
   z.literal(15),
   z.literal(30),
@@ -46,6 +47,7 @@ export const publicSettingsSchema = z.object({
   llmModelId: z.string(),
   answerMode: answerModeSchema,
   targetSeconds: targetSecondsSchema,
+  systemPrompt: z.string().max(8_000),
   fontScale: z.number().min(0.9).max(1.6),
   maxClipSeconds: z.number().int().min(30).max(120),
   autoStopOnSilence: z.boolean(),
@@ -96,12 +98,28 @@ export const historyItemSchema = z.object({
   }),
 });
 
-export const sessionOptionsSchema = z.object({
-  answerMode: answerModeSchema,
-  targetSeconds: targetSecondsSchema,
-  language: z.string().max(16).optional(),
-  sessionNotes: z.string().max(4_000).optional(),
-});
+export const sessionOptionsSchema = z
+  .object({
+    answerMode: answerModeSchema,
+    targetSeconds: targetSecondsSchema,
+    answerIntent: answerIntentSchema.optional(),
+    referenceAnswer: z.string().max(8_000).optional(),
+    language: z.string().max(16).optional(),
+    sessionNotes: z.string().max(4_000).optional(),
+  })
+  .superRefine((options, ctx) => {
+    if (
+      options.answerIntent &&
+      options.answerIntent !== 'initial' &&
+      !options.referenceAnswer?.trim()
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['referenceAnswer'],
+        message: 'An existing answer is required to request more detail.',
+      });
+    }
+  });
 
 // ---- IPC request payloads -------------------------------------------------
 

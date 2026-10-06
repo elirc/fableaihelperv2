@@ -44,9 +44,10 @@ and shows its data-use disclosure and privacy-policy link before you enable it. 
 
 - **Cloud speech-to-text** (`api.groq.com` or `generativelanguage.googleapis.com`) receives the
   current audio clip, your language setting, and the model ID — nothing else.
-- **Cloud text generation** (`api.groq.com`, `generativelanguage.googleapis.com`, or
-  `openrouter.ai`) receives the current transcript, your active profile (summary, role
-  context, emphasis notes), your session notes, and the answer-mode instructions.
+- **Cloud text generation** (`api.groq.com`, `api.cerebras.ai`,
+  `generativelanguage.googleapis.com`, or `openrouter.ai`) receives the current transcript, your
+  active profile (summary, role context, emphasis notes), your session notes, and the
+  answer-mode instructions.
 - Your API key for that provider is sent in a request header, as required to authenticate.
 
 Never sent: history, inactive profiles, screen contents, keystrokes, or anything while you are

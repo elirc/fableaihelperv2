@@ -2,6 +2,12 @@
 
 Built: 2026-07-10 • Location: `cuedeck/` • Version 0.1.0 • Electron 43.1.0, Node 22, TypeScript 5.9 (strict)
 
+> **Status note (2026-10-06):** this is a frozen record of the 2026-07-10 build. The test counts
+> below are from that date. At this repo's `main` the suite has grown to roughly 235 unit tests
+> (15 files), 90 integration tests (5 files), and 13 e2e tests (static count of test
+> declarations; not re-run for this note). Current per-tier coverage is described in
+> [docs/TESTING.md](docs/TESTING.md).
+
 ## Verification summary
 
 | Gate                                                                      | Result                                                                                                                                                                                             |

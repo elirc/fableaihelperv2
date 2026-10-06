@@ -62,7 +62,7 @@ flowchart LR
 
 Electron Forge + Vite builds four bundles (see `forge.config.ts`): `src/main/main.ts` (main), `src/preload/preload.ts` (preload), `src/main/workers/sttWorker.ts` (worker, built as a *main*-target CJS bundle with `@huggingface/transformers` kept external — see `vite.worker.config.ts`), and one renderer named `main_window`. Both app windows (Coach and Preferences) load the same renderer bundle; they differ only by URL hash (`#/` vs `#/preferences`), routed in `src/renderer/App.tsx` by a tiny hash-router hook.
 
-Startup order lives in `src/main/main.ts` → `bootstrap()`: construct stores → construct `SttWorkerManager` → register all providers into a `ProviderRegistry` → build `Diagnostics` and `SessionCoordinator` → `hardenSession()` → install the display-media handler → `registerIpc(services)` → create the coach window.
+Startup order lives in `src/main/main.ts` → `bootstrap()`: construct stores and the `CaptureGrant` → construct `SttWorkerManager` → register all providers into a `ProviderRegistry` → build `Diagnostics` and `SessionCoordinator` → `hardenSession()` → install the display-media handler → `registerIpc(services)` → create the coach window.
 
 ## 2. One "Listen" session, end to end
 
@@ -84,6 +84,7 @@ sequenceDiagram
   C->>P: armCapture(sessionId)
   P->>M: invoke 'capture:arm'
   M->>G: arm(sessionId)  — 8 s TTL, one use
+  M->>SC: prewarm() — fire-and-forget LLM warmup
   C->>C: recorder.start() → getDisplayMedia()
   Note over M: setDisplayMediaRequestHandler checks<br/>isTrustedAppUrl + grant.consume()
   M-->>C: loopback audio + throwaway video track
@@ -114,7 +115,7 @@ Step by step, with the exact code:
 
 1. **Button press** (`src/renderer/routes/Coach.tsx`, `startRecording`). The renderer mints a `sessionId` with `crypto.randomUUID()`, dispatches `{ type: 'arm', sessionId }` to the reducer (phase becomes `arming_capture`), and constructs a `ClipRecorder`.
 
-2. **Capture grant** (`window.cuedeck.armCapture` → `capture:arm` in `src/main/ipc/register.ts` → `src/main/security/captureGrant.ts`). Capture is *deny-by-default*. `CaptureGrant.arm()` records a timestamp; the grant lives `CAPTURE_GRANT_TTL_MS` (8 s, `src/shared/constants.ts`) and is one-use: `consume()` clears it whether or not it was valid. The display-media handler installed in `src/main/main.ts` refuses every `getDisplayMedia` request whose frame URL is not the app itself (`isTrustedAppUrl`) or whose grant is missing/expired/already used. When it does grant, it supplies the first screen source (Electron on Windows requires *some* video source) plus `audio: 'loopback'` — the system's output audio. This is why the e2e test "getDisplayMedia without an armed grant is denied" passes without any UI picker appearing.
+2. **Capture grant** (`window.cuedeck.armCapture` → `capture:arm` in `src/main/ipc/register.ts` → `src/main/security/captureGrant.ts`). The same handler also fires `services.coordinator.prewarm()` without awaiting it, so the LLM starts loading while the clip is still being recorded (see "First-token latency" below). Capture is *deny-by-default*. `CaptureGrant.arm()` records a timestamp; the grant lives `CAPTURE_GRANT_TTL_MS` (8 s, `src/shared/constants.ts`) and is one-use: `consume()` clears it whether or not it was valid. The display-media handler installed in `src/main/main.ts` refuses every `getDisplayMedia` request whose frame URL is not the app itself (`isTrustedAppUrl`) or whose grant is missing/expired/already used. When it does grant, it supplies the first screen source (Electron on Windows requires *some* video source) plus `audio: 'loopback'` — the system's output audio. This is why the e2e test "getDisplayMedia without an armed grant is denied" passes without any UI picker appearing.
 
 3. **Recording** (`src/renderer/audio/recorder.ts`). `ClipRecorder.start()` calls `getDisplayMedia`, immediately stops the video tracks (only audio is retained), creates an `AudioContext`, and loads the AudioWorklet module `public/audio-capture-worklet.js`. The worklet runs on the audio rendering thread; every 128-frame quantum it downmixes to mono, computes RMS/peak, and posts the samples to the recorder. The recorder buffers chunks, throttles level callbacks to ~15 Hz for the meter, and auto-stops at `maxClipSeconds`. The reducer's `meter` action also tracks `silentSoFar`, which drives the "No audio detected yet" banner after 3 s of silence.
 
@@ -157,7 +158,7 @@ The adapters:
 | Groq / Cerebras / OpenRouter (LLM) | `groq.ts`, `cerebras.ts`, `openRouter.ts` | Descriptor-driven subclasses of `OpenAiCompatibleLlmProvider` in `openAiCompatible.ts` (shared SSE streaming, HTTP status → error-code mapping, one Retry-After honor on 429, warmup preconnect). Adding another OpenAI-compatible endpoint is a descriptor + an `ALLOWED_HOSTS` entry. |
 | Gemini (LLM) | `gemini.ts` | `streamGenerateContent` SSE |
 
-**First-token latency.** The coordinator fires the LLM's optional `warmup` while transcription is still running, so provider setup cost overlaps STT instead of adding to time-to-first-token: Ollama preloads the model (`/api/chat` with an empty `messages` array) and every chat request carries `keep_alive` so the model stays resident between turns; cloud adapters open an authenticated keep-alive TLS connection that Node's fetch pools for the generate call. Warmup is best-effort — failures are swallowed and resurface with proper error mapping in the real generate call. Gemini requests additionally disable 2.5 Flash's default "thinking" phase (`thinkingBudget: 0`), which otherwise delays the first token by seconds.
+**First-token latency.** The LLM's optional `warmup` is fired twice per session, both fire-and-forget: once by `SessionCoordinator.prewarm()` when capture is armed (`capture:arm` in `register.ts`), and again by the private `warmupLlm()` right after the coordinator enters `transcribing` (`coordinator.ts`). Provider setup cost therefore overlaps recording and STT instead of adding to time-to-first-token: Ollama preloads the model (`/api/chat` with an empty `messages` array) and every chat request carries `keep_alive` so the model stays resident between turns; cloud adapters open an authenticated keep-alive TLS connection that Node's fetch pools for the generate call. Warmup is best-effort — failures are swallowed and resurface with proper error mapping in the real generate call. Gemini requests additionally disable 2.5 Flash's default "thinking" phase (`thinkingBudget: 0`), which otherwise delays the first token by seconds.
 
 Static metadata (display names, local/cloud location, free-tier policy, privacy disclosures, shared-account `credentialId`) and all cloud model IDs live in `src/shared/catalog.ts` — never inline in adapters, so a provider-side model rename is a one-line change. OpenRouter additionally enforces a free-models-only policy (`isFreeOpenRouterModel`) both when listing and before generating.
 
@@ -175,7 +176,7 @@ Everything persists as JSON files under Electron's `userData` directory (overrid
 
 ## 5. Security model in brief
 
-Read `src/main/security/` and SECURITY.md at the repo root; the short version:
+Read `src/main/security/` and `SECURITY.md` (in `cuedeck/`); the short version:
 
 1. **Renderer privilege**: sandboxed, context-isolated, no Node, `webviewTag: false`; window creation and navigation away from the app are denied globally (`hardenWebContents` in `windowSecurity.ts` plus the `web-contents-created` hook in `main.ts`).
 2. **IPC hardening** (`src/main/ipc/register.ts`): every channel goes through `secureHandle`, which (a) rejects senders whose URL is not the app itself and any non-main frame, (b) Zod-parses payloads, and (c) converts every thrown error to a structured `PublicError` (`src/shared/errors.ts`) — codes, human messages, and retryability, never stack traces. The preload re-parses those on the way in (`invoke` in `preload.ts`).
@@ -187,10 +188,21 @@ Read `src/main/security/` and SECURITY.md at the repo root; the short version:
 8. **Diagnostics redaction**: anything recorded or exported passes through `redactSecrets`/`redactDeep` (`src/shared/redact.ts`), which aggressively masks bearer tokens and known provider key shapes.
 9. **Deliberate non-goal**: there is **no** `setContentProtection` anywhere — the app never hides itself from screen capture, and the onboarding consent screen (see `src/renderer/routes/Onboarding.tsx`) commits to that. Do not add concealment features.
 
-## 6. Where to go next
+## 6. Self-check exercises
+
+Each one runs from the `cuedeck/` folder with plain `node` — no `npm install`, no Electron.
+
+1. **Goal:** prove the IPC surface is a closed list — every `secureHandle` channel in `register.ts` has exactly one named preload method, and nothing else crosses.
+   **Check:** `node -e "const f=require('fs').readFileSync;const a=[...f('src/main/ipc/register.ts','utf8').matchAll(/secureHandle\('([^']+)'/g)].map(m=>m[1]);const b=[...f('src/preload/preload.ts','utf8').matchAll(/invoke(?:<[^>]*>)?\('([^']+)'/g)].map(m=>m[1]);console.log(a.length,b.length,a.filter(x=>!b.includes(x)))"` prints `25 25 []`. If you add a channel to one file only, this is the first thing that breaks.
+2. **Goal:** confirm every cloud host an adapter talks to is on `ALLOWED_HOSTS`, and learn to tell a fetched URL from a mere string.
+   **Check:** `node -e "const fs=require('fs');const c=fs.readFileSync('src/shared/constants.ts','utf8');const allow=[...c.slice(c.indexOf('ALLOWED_HOSTS')).split('] as const')[0].matchAll(/'([^']+)'/g)].map(m=>m[1]);for(const f of fs.readdirSync('src/main/providers/llm')){const s=fs.readFileSync('src/main/providers/llm/'+f,'utf8');for(const m of s.matchAll(/https:\/\/([^\/'\x60]+)/g))console.log(allow.includes(m[1])?'OK  ':'MISS',m[1],f)}"` prints four `OK` lines (Cerebras, Gemini, Groq, OpenRouter) and one `MISS github.com openRouter.ts`. Open `openRouter.ts` and explain why that miss is harmless (it is the `http-referer` header *value*, never a request target), then explain what would happen at runtime if a real base URL were missing from the list (`allowlistedFetch` in `src/main/security/http.ts`).
+3. **Goal:** confirm the order of the pipeline stages in section 2 against the code, not this doc.
+   **Check:** `node -e "require('fs').readFileSync('src/main/sessions/coordinator.ts','utf8').split('\n').forEach((l,i)=>{if(/setState\(context, '(transcribing|generating)'\)|this\.warmupLlm\(|stt\.transcribe\(|llm\.generate\(/.test(l))console.log(i+1,l.trim())})"` prints, in ascending line order: `setState(... 'transcribing')`, `this.warmupLlm(...)`, `stt.transcribe(...)`, `setState(... 'generating')`, `llm.generate(...)`. Explain why the warmup line sits *before* the `await` on `transcribe` and not after it.
+
+## 7. Where to go next
 
 - Making changes (new provider, new IPC channel, new route): `docs/DEVELOPMENT.md`
 - Test tiers and how to run them: `docs/TESTING.md`
-- User-facing behavior and privacy commitments: `README.md`, `PRIVACY.md`, `SECURITY.md` at the repo root
+- User-facing behavior and privacy commitments: `README.md`, `PRIVACY.md`, `SECURITY.md` in the `cuedeck/` folder (the app root, one level below the git repository root)
 
 A note on comments: source files cite spec section numbers like `(spec §14)` and requirement IDs like `CAP-10`. These refer to the original product/engineering spec, which is **not** checked into this repository — treat the numbers as historical breadcrumbs, not as something you can look up here.

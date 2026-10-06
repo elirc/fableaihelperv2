@@ -192,7 +192,8 @@ Notes on the diagram: the **capture grant** means the renderer must explicitly a
 `getDisplayMedia` request is denied. **NDJSON** (newline-delimited JSON) is Ollama's streaming
 format: one JSON object per line, which the app parses incrementally to stream tokens into the
 response card. The main process may only contact loopback plus a short hardcoded host allowlist
-(Groq, Google, OpenRouter, Hugging Face model CDN — see `src/shared/constants.ts`).
+(Groq, Cerebras, Google, OpenRouter, Hugging Face model CDN — see `ALLOWED_HOSTS` in
+`src/shared/constants.ts`).
 
 ## Troubleshooting
 
